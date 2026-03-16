@@ -751,7 +751,7 @@ WHERE ext.property_key = 'hotfix_flag'
 | `git_pull_requests_commits` | *(junction)* | Used internally for PR↔commit linkage |
 
 **Planned Gold streams**:
-- `class_commits`: Deduplicated commits with resolved `person_id`, language breakdown, and AI detection flags
+**Planned Silver streams**:
 - `class_pr_activity`: PR lifecycle events with review depth metrics and cycle time calculations
 
 **Gold metrics**:
