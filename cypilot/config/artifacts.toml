@@ -153,24 +153,44 @@ path = "docs/connectors/ai-dev/github-copilot.md"
 name = "GitHub Copilot Connector Specification"
 
 [[systems.artifacts]]
-kind = "DESIGN"
-path = "docs/connectors/ai/claude-api.md"
-name = "Claude API Connector Specification"
+kind = "PRD"
+path = "docs/connectors/ai/claude-api/specs/PRD.md"
+name = "Claude API Connector PRD"
 
 [[systems.artifacts]]
 kind = "DESIGN"
-path = "docs/connectors/ai/claude-team.md"
-name = "Claude Team Connector Specification"
+path = "docs/connectors/ai/claude-api/specs/DESIGN.md"
+name = "Claude API Connector Design"
+
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/connectors/ai/claude-team/specs/PRD.md"
+name = "Claude Team Plan Connector PRD"
 
 [[systems.artifacts]]
 kind = "DESIGN"
-path = "docs/connectors/ai/chatgpt-team.md"
-name = "ChatGPT Team Connector Specification"
+path = "docs/connectors/ai/claude-team/specs/DESIGN.md"
+name = "Claude Team Plan Connector Design"
+
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/connectors/ai/chatgpt-team/specs/PRD.md"
+name = "ChatGPT Team Connector PRD"
 
 [[systems.artifacts]]
 kind = "DESIGN"
-path = "docs/connectors/ai/openai-api.md"
-name = "OpenAI API Connector Specification"
+path = "docs/connectors/ai/chatgpt-team/specs/DESIGN.md"
+name = "ChatGPT Team Connector Design"
+
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/connectors/ai/openai-api/specs/PRD.md"
+name = "OpenAI API Connector PRD"
+
+[[systems.artifacts]]
+kind = "DESIGN"
+path = "docs/connectors/ai/openai-api/specs/DESIGN.md"
+name = "OpenAI API Connector Design"
 
 [[systems.artifacts]]
 kind = "DESIGN"
