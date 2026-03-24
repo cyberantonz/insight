@@ -1,0 +1,26 @@
+# Connector package descriptor
+name: bamboohr
+version: "1.0"
+type: nocode
+
+# Silver layer targets this connector populates
+silver_targets:
+  - class_people
+
+# Stream definitions mapping to Bronze tables
+streams:
+  - name: bamboohr_employees
+    bronze_table: bamboohr_employees
+    primary_key: [id]
+    cursor_field: lastChanged
+  - name: bamboohr_leave_requests
+    bronze_table: bamboohr_leave_requests
+    primary_key: [id]
+  - name: bamboohr_meta_fields
+    bronze_table: bamboohr_meta_fields
+    primary_key: [unique]
+  - name: bamboohr_meta_tables
+    bronze_table: bamboohr_meta_tables
+    primary_key: [alias]
+  - name: bamboohr_meta_lists
+    bronze_table: bamboohr_meta_lists
