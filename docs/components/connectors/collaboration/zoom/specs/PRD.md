@@ -42,7 +42,7 @@
 
 The Zoom Connector extracts collaboration activity from Zoom into the Insight platform's Bronze layer so the organization can understand which meetings happened, who attended them, how long participants stayed, and how actively users communicated through Zoom messages. The connector covers meetings as the primary collaboration signal, message activity as the primary async signal, and Zoom users only as supporting identity and directory context.
 
-The connector is designed around incremental collection. Newly discovered meetings are not sufficient on their own; each newly discovered meeting must trigger collection of meeting details and participant records so that downstream analytics can measure real participation rather than only high-level summaries. Message activity is also required, but its collection path must follow source capabilities and should only be linked directly to meetings when Zoom exposes a reliable meeting-level relationship.
+The connector is designed around incremental collection. Newly discovered meetings are not sufficient on their own; each newly discovered meeting must trigger collection of meeting details and participant records so that downstream analytics can measure real participation rather than only high-level summaries. Message activity is also required, but it is collected through a separate user-scoped message flow and should only be linked directly to meetings when Zoom exposes a reliable meeting-level relationship.
 
 ### 1.2 Background / Problem Statement
 
@@ -78,7 +78,7 @@ Message activity is also required, but message content is not. The connector sho
 
 - Discover Zoom meetings and enrich each newly discovered meeting with detail and participants
 - Measure who attended a meeting and how long each participant attended
-- Collect Zoom message activity for user-level communication metrics without storing message content, using the most suitable source-supported collection path
+- Collect Zoom message activity for user-level communication metrics without storing message content, using a separate user-scoped message collection flow
 - Support identity resolution through Zoom user directory data and stable source-native identifiers
 
 ### 1.4 Glossary
@@ -147,7 +147,7 @@ Message activity is also required, but message content is not. The connector sho
 - Discovery of Zoom meetings that occurred within the configured collection window
 - Incremental enrichment of every newly discovered meeting with meeting details and participant records
 - Participant-level attendance data sufficient to determine who attended and how long they attended
-- Collection of Zoom message activity for all messages in supported Zoom messaging surfaces using source-capability-aware activity flows
+- Collection of Zoom message activity for all messages in supported Zoom messaging surfaces through a separate user-scoped message collection flow
 - Collection of Zoom user records only as identity and directory support for meetings and messages
 - Connector run logging, completeness monitoring, and idempotent reprocessing of overlapping collection windows
 
@@ -216,13 +216,13 @@ The connector **MUST** collect Zoom message activity for all supported messages 
 
 **Actors**: `cpt-insightspec-actor-zoom-api`, `cpt-insightspec-actor-zoom-analyst`
 
-#### Use Source-Capability-Aware Message Collection
+#### Use Separate Message Collection Flow
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-zoom-message-collection-strategy`
 
-If Zoom provides a suitable aggregated or direct activity endpoint for the required message metrics, the connector **MUST** use that source-supported path. If Zoom does not provide such an endpoint, the connector **MUST** still collect required message activity through separate message or chat collection flows.
+The connector **MUST** collect required Zoom message activity through a separate user-scoped message collection flow rather than through meeting enrichment.
 
-**Rationale**: Message activity is mandatory, but the source may expose it through different collection patterns. The connector should use the most reliable supported path rather than forcing a single strategy.
+**Rationale**: Message activity is mandatory, but it is implemented as its own async collection path so meeting enrichment remains meeting-scoped and message collection remains operationally independent.
 
 **Actors**: `cpt-insightspec-actor-zoom-api`, `cpt-insightspec-actor-zoom-operator`
 
@@ -230,7 +230,7 @@ If Zoom provides a suitable aggregated or direct activity endpoint for the requi
 
 - [ ] `p2` - **ID**: `cpt-insightspec-fr-zoom-message-linkage-scope`
 
-The connector **MUST NOT** require message activity to be collected through per-meeting enrichment unless the source provides a reliable meeting-level linkage. When such linkage is unavailable, the connector **MUST** collect message activity through the appropriate separate activity flow and preserve the strongest available attribution context.
+The connector **MUST NOT** require message activity to be collected through per-meeting enrichment unless the source provides a reliable meeting-level linkage. When such linkage is unavailable, the connector **MUST** collect message activity through the separate user-scoped activity flow and preserve the strongest available attribution context.
 
 **Rationale**: Some Zoom message metrics may be available without trustworthy meeting-level linkage. Forcing them into meeting enrichment would create avoidable gaps or misleading associations.
 
@@ -252,7 +252,7 @@ The connector **MUST NOT** store Zoom message body content when satisfying messa
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-zoom-incremental-collection`
 
-The connector **MUST** support incremental collection so that ongoing runs process newly available meetings and message activity without requiring full historical reloads, using meeting-scoped or separate message flows as appropriate to source capabilities.
+The connector **MUST** support incremental collection so that ongoing runs process newly available meetings and message activity without requiring full historical reloads, using meeting-scoped enrichment plus a separate user-scoped message flow.
 
 **Rationale**: Incremental collection is required for sustainable operation and for timely enrichment of new Zoom activity.
 
@@ -379,6 +379,7 @@ None.
 **Preconditions**:
 - Zoom connector credentials and required scopes are configured
 - A collection run starts for a window containing meetings not yet fully enriched
+- Zoom Server-to-Server OAuth credentials are configured for meeting, participant, user, and message activity access
 
 **Main Flow**:
 1. The connector discovers newly visible Zoom meetings in the collection window
@@ -390,7 +391,7 @@ None.
 
 **Postconditions**:
 - Each newly discovered meeting has corresponding detail and participant evidence
-- Any meeting-linked message activity exposed by the source is preserved; otherwise message activity is collected through the appropriate separate flow
+- Any meeting-linked message activity exposed by the source is preserved; otherwise message activity is collected through the separate user-scoped flow
 
 **Alternative Flows**:
 - **Participant detail unavailable**: If Zoom does not provide participant detail for a discovered meeting, the connector records the limitation and marks the meeting as partially enriched rather than silently complete
@@ -407,13 +408,11 @@ None.
 - The connector runs for a collection window with eligible message activity
 
 **Main Flow**:
-1. The connector determines whether Zoom exposes the required message metrics through a suitable aggregated or direct activity endpoint
-2. If such an endpoint exists, the connector reads message activity from that source-supported path
-3. If such an endpoint does not exist, the connector reads message activity through the appropriate separate message or chat collection flow
-4. The connector attributes each message activity record to a source user
-5. The connector persists message metadata needed for counting and timing analysis
-6. The connector excludes message body content from persisted records
-7. Downstream consumers aggregate message counts per user and time period
+1. The connector reads Zoom message activity through the configured separate user-scoped message collection flow
+2. The connector attributes each message activity record to a source user
+3. The connector persists message metadata needed for counting and timing analysis
+4. The connector excludes message body content from persisted records
+5. Downstream consumers aggregate message counts per user and time period
 
 **Postconditions**:
 - User-attributed Zoom message activity is available for analytics
@@ -429,14 +428,14 @@ None.
 - [ ] Insight can determine who attended a collected Zoom meeting and how long each participant attended for the majority of eligible meetings
 - [ ] Insight can compute per-user Zoom message counts without storing message content
 - [ ] Newly discovered meetings trigger incremental enrichment for meeting detail and participants rather than remaining summary-only records
-- [ ] Zoom message activity is collected through a suitable direct or aggregated activity source when available, or through separate message or chat collection flows when it is not
+- [ ] Zoom message activity is collected through a separate user-scoped message collection flow without relying on meeting enrichment
 - [ ] Historical Zoom activity can be backfilled on a best-effort basis without changing the requirement for ongoing incremental collection
 
 ## 10. Dependencies
 
 | Dependency | Description | Criticality |
 |------------|-------------|-------------|
-| Zoom account and application access | Required account configuration, authentication model, and permissions for meeting, participant, user, and message activity collection | p1 |
+| Zoom account and application access | Required Server-to-Server OAuth account configuration, credentials, and permissions for meeting, participant, user, and message activity collection | p1 |
 | Zoom activity endpoint availability | Source support for exposing discoverable meetings, participant attendance detail, and message activity | p1 |
 | Identity Manager | Resolves Zoom user attributes to canonical `person_id` for cross-source analytics | p1 |
 | Bronze ingestion infrastructure | Persists connector outputs and run logs for downstream processing | p1 |
@@ -447,7 +446,7 @@ None.
 - Zoom Meetings are the only synchronous Zoom activity in scope for this release; Zoom Phone is excluded
 - Webinar collection will be addressed in a later release and does not need to be represented as a meeting in this PRD
 - Message activity refers to all supported Zoom messages in scope, but not to message body content
-- Zoom may expose message activity through aggregated or direct activity endpoints, separate chat flows, or both depending on source capabilities and tenant configuration
+- Zoom message activity for the current connector implementation is collected only through a separate user-scoped message flow
 - Message activity may not always have a reliable direct linkage to a specific meeting and should not be forced into meeting-scoped enrichment when such linkage is absent
 - Source account configuration provides enough participant detail to calculate attendance duration for most eligible meetings
 - Historical backfill depth varies by tenant and should be treated as best-effort rather than guaranteed
@@ -459,5 +458,5 @@ None.
 |------|--------|------------|
 | Zoom source limitations reduce participant visibility for some meetings | Attendance duration may be incomplete, weakening trust in collaboration metrics | Track completeness explicitly, record source-side limitations, and surface coverage gaps to operators |
 | API fan-out for meeting enrichment is higher than expected | Large tenants may experience slower collection cycles or operational pressure during peak windows | Prioritize incremental collection, monitor enrichment completeness, and design scheduling around expected discovery volume |
-| Message activity coverage differs across Zoom plans, endpoint availability, or account configurations | Per-user message counts may be incomplete or inconsistent across tenants, and meeting-level linkage may not always be available | Treat message coverage as a source dependency, support separate message collection flows, and expose linkage limitations in run reporting |
+| Message activity coverage differs across Zoom plans or account configurations | Per-user message counts may be incomplete or inconsistent across tenants, and meeting-level linkage may not always be available | Treat message coverage as a source dependency for the separate message flow and expose linkage limitations in run reporting |
 | Historical activity is not fully recoverable during onboarding | Early dashboards may start with partial history and create baseline gaps | Set onboarding expectations that backfill is best-effort and prioritize stable ongoing collection from day one |

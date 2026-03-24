@@ -39,9 +39,9 @@
 
 ### 1.1 Architectural Vision
 
-The Zoom connector uses a meeting-first Bronze design that preserves source-native meeting and participant evidence as the authoritative synchronous collaboration record, while handling message activity through a separate source-capability-aware flow. This design follows the current [PRD.md](./PRD.md) as the source of truth: meeting discovery and meeting enrichment are mandatory and meeting-scoped, participant attendance duration is a hard `p1` requirement, and message activity is mandatory but must not be forced into meeting enrichment unless Zoom exposes reliable meeting-level linkage.
+The Zoom connector uses a meeting-first Bronze design that preserves source-native meeting and participant evidence as the authoritative synchronous collaboration record, while handling message activity through a separate user-scoped chat flow. This design follows the current [PRD.md](./PRD.md) as the source of truth: meeting discovery and meeting enrichment are mandatory and meeting-scoped, participant attendance duration is a hard `p1` requirement, and message activity is mandatory but must not be forced into meeting enrichment unless Zoom exposes reliable meeting-level linkage.
 
-The architecture separates discovery from enrichment so that newly visible meetings can be identified cheaply, queued for follow-up, and then enriched with detail and participant records through idempotent per-meeting work. Message activity follows a parallel but distinct path. When Zoom exposes suitable aggregated or direct message activity endpoints, the connector uses them. When it does not, the connector falls back to separate chat or message collection flows. In both cases the connector preserves the strongest supported linkage between entities and leaves unsupported relationships null rather than inventing source semantics.
+The architecture separates discovery from enrichment so that newly visible meetings can be identified cheaply, queued for follow-up, and then enriched with detail and participant records through idempotent per-meeting work. Message activity follows a parallel but distinct path implemented through a separate user-scoped chat collection flow. The connector preserves the strongest supported linkage between entities and leaves unsupported relationships null rather than inventing source semantics.
 
 Historical recovery is treated as best-effort onboarding or replay behavior, while ongoing incremental collection is mandatory. The design therefore centers on durable cursors, overlap-window replay, per-entity idempotence, and run logging that makes incomplete enrichment and source-capability limitations visible to operators.
 
@@ -60,10 +60,10 @@ Requirements that significantly influence architecture decisions.
 | `cpt-insightspec-fr-zoom-meeting-participants` | Store participant records per meeting with join and leave evidence, and derive participant duration from source-provided attendance timestamps when available. |
 | `cpt-insightspec-fr-zoom-meeting-traceability` | Model meetings and participants as first-class Bronze entities; expose optional message linkage only when the source provides trustworthy association. |
 | `cpt-insightspec-fr-zoom-message-activity` | Persist message activity as a dedicated Bronze entity independent from meeting enrichment. |
-| `cpt-insightspec-fr-zoom-message-collection-strategy` | Select between direct or aggregated activity endpoints and separate chat flows through a source-capability-aware collection strategy. |
+| `cpt-insightspec-fr-zoom-message-collection-strategy` | Implement message activity through a separate user-scoped chat flow that stays independent from meeting enrichment. |
 | `cpt-insightspec-fr-zoom-message-linkage-scope` | Keep meeting-scoped enrichment separate from message collection; allow nullable meeting linkage in message records only when source semantics support it. |
 | `cpt-insightspec-fr-zoom-message-content-exclusion` | Exclude message bodies from Bronze tables and retain only metadata needed for counting, attribution, timing, and optional linkage. |
-| `cpt-insightspec-fr-zoom-incremental-collection` | Use persisted cursors and overlap windows for discovery, enrichment, and message collection independently. |
+| `cpt-insightspec-fr-zoom-incremental-collection` | Use persisted cursors and overlap windows for discovery, enrichment, and the separate message collection flow independently. |
 | `cpt-insightspec-fr-zoom-historical-backfill` | Support bounded historical replay jobs that reuse the same collectors and idempotence keys as steady-state runs. |
 | `cpt-insightspec-fr-zoom-collection-runs` | Emit a collection run record plus component-level counters and limitation metadata for every run. |
 | `cpt-insightspec-fr-zoom-idempotence` | Define stable uniqueness keys for meetings, participants, users, messages, and run rows so replay is safe. |
@@ -101,7 +101,7 @@ flowchart TD
 
 | Layer | Responsibility | Technology |
 |-------|---------------|------------|
-| Source Integration | Detect endpoint capabilities and collect Zoom entities | Zoom REST APIs, OAuth 2.0 Server-to-Server app |
+| Source Integration | Call the configured Zoom endpoints and collect Zoom entities | Zoom REST APIs, OAuth 2.0 Server-to-Server app |
 | Collection Orchestration | Manage cursors, overlap windows, queued enrichment, retries | Existing repository connector runtime and scheduled batch jobs |
 | Domain Normalization | Normalize source records into meeting, participant, message, user, and run entities | Connector transformation layer |
 | Persistence | Write idempotent Bronze rows and run state | Bronze storage used by repository connector specs |
@@ -190,7 +190,7 @@ The connector may inspect message metadata needed for metrics, but it must not p
 |--------|-------------|--------|
 | ZoomMeeting | Meeting discovered from Zoom and enriched with meeting-level metadata | [DESIGN.md](./DESIGN.md) |
 | ZoomMeetingParticipant | Participant attendance evidence for a specific meeting | [DESIGN.md](./DESIGN.md) |
-| ZoomMessageActivity | User-attributed async message activity collected from direct, aggregated, or separate chat flows | [DESIGN.md](./DESIGN.md) |
+| ZoomMessageActivity | User-attributed async message activity collected from a separate user-scoped chat flow | [DESIGN.md](./DESIGN.md) |
 | ZoomUser | Lightweight user directory record used for attribution and identity resolution | [DESIGN.md](./DESIGN.md) |
 | ZoomCollectionRun | Run-level observability record with component counters and limitation metadata | [DESIGN.md](./DESIGN.md) |
 
@@ -248,7 +248,7 @@ The connector needs a single place to interpret which Zoom endpoints and linkage
 
 ##### Responsibility scope
 
-- Resolve whether meeting discovery, meeting detail, participant detail, direct message metrics, aggregated message metrics, and separate chat flows are available
+- Resolve whether meeting discovery, meeting detail, participant detail, and the configured separate chat flow are available
 - Publish a capability profile used by downstream collectors
 
 ##### Responsibility boundaries
@@ -259,7 +259,7 @@ The connector needs a single place to interpret which Zoom endpoints and linkage
 ##### Related components (by ID)
 
 - `cpt-insightspec-component-zoom-meeting-discovery` — enables meeting discovery strategy
-- `cpt-insightspec-component-zoom-message-collector` — selects message collection mode
+- `cpt-insightspec-component-zoom-message-collector` — validates separate message flow availability
 
 #### Meeting Discovery Collector
 
@@ -364,12 +364,11 @@ Participant attendance duration is a hard `p1` requirement and therefore needs a
 
 ##### Why this component exists
 
-Message activity is mandatory, but the source may expose it through different endpoint shapes and linkage semantics.
+Message activity is mandatory, but it is implemented as a dedicated separate flow with its own endpoint behavior and linkage semantics.
 
 ##### Responsibility scope
 
-- Select direct or aggregated message activity endpoints when available
-- Fall back to separate message or chat collection flows when no suitable activity endpoint exists
+- Collect message activity through the implemented separate user-scoped chat flow
 - Persist optional `linked_meeting_instance_key` only when the source exposes reliable linkage that can be normalized into the canonical meeting identity
 
 ##### Responsibility boundaries
@@ -468,7 +467,7 @@ This connector exposes no public repository-facing API contract. Internal collec
 
 | Dependency Module | Interface Used | Purpose |
 |-------------------|---------------|---------|
-| Zoom account integration | OAuth 2.0 authenticated REST APIs | Provide meetings, participants, user directory data, and message activity where supported |
+| Zoom account integration | Server-to-Server OAuth authenticated REST APIs | Provide meetings, participants, user directory data, and message activity through the configured endpoint set |
 
 **Dependency Rules** (per project conventions):
 - Only the Zoom connector integration talks to Zoom directly
@@ -518,19 +517,14 @@ sequenceDiagram
 sequenceDiagram
     Scheduler->>CapabilityResolver: resolve message capabilities
     CapabilityResolver-->>MessageCollector: capability profile
-    alt direct or aggregated endpoint available
-        MessageCollector->>ZoomAPI: read message activity endpoint
-        ZoomAPI-->>MessageCollector: activity rows
-    else separate chat flow required
-        MessageCollector->>ZoomAPI: read message/chat flow
-        ZoomAPI-->>MessageCollector: message metadata rows
-    end
+    MessageCollector->>ZoomAPI: read message/chat flow
+    ZoomAPI-->>MessageCollector: message metadata rows
     MessageCollector->>UserSync: resolve source user attributes
     UserSync-->>MessageCollector: user mapping
     MessageCollector->>Bronze: upsert zoom_message_activity
 ```
 
-**Description**: Message activity is collected independently from meeting enrichment. The collector uses the best source-supported path and persists optional meeting linkage only when Zoom provides trustworthy association.
+**Description**: Message activity is collected independently from meeting enrichment. The current implementation reads a separate user-scoped chat flow and persists optional meeting linkage only when Zoom provides trustworthy association in that payload.
 
 ### 3.7 Database schemas & tables
 
@@ -614,7 +608,7 @@ sequenceDiagram
 | `channel_type` | String | Source-supported message surface classification |
 | `message_count` | Int | Count represented by this row |
 | `aggregation_level` | String | `event`, `conversation_day`, `user_day`, or other source-supported grain |
-| `collection_mode` | String | `direct_activity`, `aggregated_activity`, or `separate_chat_flow` |
+| `collection_mode` | String | Always `separate_chat_flow` in the current implementation |
 | `linked_meeting_instance_key` | String | Nullable canonical meeting link only when provided reliably by source |
 | `linked_meeting_series_id` | String | Nullable source series identifier preserved for traceability |
 | `linked_meeting_occurrence_id` | String | Nullable source occurrence identifier preserved for traceability |
@@ -629,7 +623,7 @@ sequenceDiagram
 
 **Constraints**: Message body content must not be persisted; `linked_meeting_instance_key` may be null
 
-**Additional info**: Unifies different source-supported message collection paths into one Bronze table while preserving collection mode and linkage quality
+**Additional info**: Stores async activity collected from the connector's separate message flow while preserving linkage quality
 
 #### Table: `zoom_users`
 
@@ -710,12 +704,9 @@ The connector uses three independent but coordinated source collection strategie
 
 1. Meeting discovery scans the configured incremental window for newly visible meetings and persists them immediately.
 2. Meeting enrichment reads per-meeting detail and participant attendance evidence for every discovered meeting until complete or explicitly limited.
-3. Message activity collection resolves the best supported source path:
-   - use a direct activity endpoint when Zoom exposes message activity at the required grain,
-   - otherwise use an aggregated activity endpoint when it satisfies the product metrics,
-   - otherwise use separate message or chat collection flows.
+3. Message activity collection runs through a separate user-scoped chat flow and remains operationally independent from meeting enrichment.
 
-This prioritizes source-supported simplicity without allowing message requirements to disappear when Zoom lacks a single ideal endpoint.
+This keeps the implementation practical and aligned with the approved scope without allowing message requirements to disappear.
 
 ### Incremental Discovery Strategy
 
@@ -732,15 +723,13 @@ This keeps ongoing incremental collection mandatory without blocking the pipelin
 
 ### Endpoint Usage Strategy
 
-Endpoint usage is governed by the capability resolver. The design assumes the following categories rather than hardcoding a single Zoom API contract:
-- discoverable meeting list endpoint or flow
-- per-meeting detail endpoint
-- per-meeting participant endpoint
-- direct or aggregated message activity endpoint
-- separate chat or message collection flow
-- user directory endpoint
+The current implementation uses the following Zoom API contract:
+- `GET /users` for user directory support and message-flow partitioning
+- `GET /metrics/meetings` for meeting discovery
+- `GET /metrics/meetings/{meeting_uuid}/participants` for meeting-scoped participant attendance evidence, with encoded meeting UUID and tolerant handling for source-side `404` gaps
+- `GET /chat/users/{zoom_user_id}/messages` for separate user-scoped message activity collection
 
-If a category is unsupported, the connector records that limitation and selects the strongest remaining supported strategy. It never creates synthetic meeting-message joins to compensate.
+Server-to-Server OAuth token acquisition uses `account_id`, `client_id`, and `client_secret`. The design still records source limitations when any endpoint does not expose complete data, but it does not model multiple interchangeable message collection strategies in the current implementation. It never creates synthetic meeting-message joins to compensate.
 
 ### Identity Model
 
@@ -792,8 +781,9 @@ This gives operators direct visibility into whether low message counts are cause
 - Assumption: the repository’s existing Bronze ingestion runtime can support replay-safe upsert semantics and run attribution for connector rows.
 - Assumption: source payloads provide enough participant timing evidence to calculate attendance duration for most eligible meetings.
 - Assumption: message activity may arrive at a different grain than meetings and should still be preserved.
+- Assumption: the current connector implementation authenticates through Zoom Server-to-Server OAuth using `account_id`, `client_id`, and `client_secret`.
 - Assumption: Zoom endpoints may expose `id`, `uuid`, and `occurrence_id` inconsistently, but at least one stable concrete meeting identity path is available for most collected meetings.
-- Risk: some tenants may expose message metrics only through expensive separate chat flows, increasing API cost and runtime.
+- Risk: the separate user-scoped message flow may be expensive or incomplete for some tenants, increasing API cost and runtime.
 - Risk: different endpoints may surface different meeting identifier forms for the same real-world meeting instance, making canonical normalization and reconciliation critical to avoid split identity.
 - Risk: recurring meetings may require careful handling of occurrence identity to avoid merging separate meeting instances.
 - Risk: participant payload quality may differ across meeting types, making completeness highly dependent on source capabilities.

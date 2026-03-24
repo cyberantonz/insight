@@ -3,7 +3,7 @@
 > Version 2.0 — March 2026
 > Based on: [`docs/components/connectors/collaboration/zoom/specs/PRD.md`](./specs/PRD.md), [`docs/components/connectors/collaboration/zoom/specs/DESIGN.md`](./specs/DESIGN.md), Collaboration domain unified schema (`docs/connectors/collaboration/README.md`)
 
-Standalone specification for the Zoom (Collaboration) connector. This document aligns to the current Zoom connector PRD and DESIGN: the connector is meeting-first, preserves per-meeting and per-participant evidence as the authoritative synchronous activity model, treats message activity as mandatory through a source-capability-aware async flow, and uses Zoom users only for identity and attribution support.
+Standalone specification for the Zoom (Collaboration) connector. This document aligns to the current Zoom connector PRD and DESIGN: the connector is meeting-first, preserves per-meeting and per-participant evidence as the authoritative synchronous activity model, treats message activity as mandatory through a separate user-scoped async flow, and uses Zoom users only for identity and attribution support.
 
 <!-- toc -->
 
@@ -19,7 +19,7 @@ Standalone specification for the Zoom (Collaboration) connector. This document a
 - [Identity Resolution](#identity-resolution)
 - [Silver / Gold Mappings](#silver--gold-mappings)
 - [Open Questions](#open-questions)
-  - [OQ-ZOOM-1: Message activity source capability variability](#oq-zoom-1-message-activity-source-capability-variability)
+  - [OQ-ZOOM-1: Message activity endpoint stability](#oq-zoom-1-message-activity-endpoint-stability)
   - [OQ-ZOOM-2: Meeting identity consistency across endpoints](#oq-zoom-2-meeting-identity-consistency-across-endpoints)
   - [OQ-ZOOM-3: `meetings_organized` gap](#oq-zoom-3-meetingsorganized-gap)
   - [OQ-ZOOM-4: Webinar vs. meeting distinction](#oq-zoom-4-webinar-vs-meeting-distinction)
@@ -36,16 +36,16 @@ Standalone specification for the Zoom (Collaboration) connector. This document a
 
 **Identity**: `zoom_user_id` and `email` from `GET /users` and embedded meeting or message payloads — resolved to canonical `person_id` via Identity Manager.
 
-**Authentication**: OAuth 2.0 — Server-to-Server OAuth app (recommended). JWT is deprecated as of 2023 and must not be used for new integrations.
+**Authentication**: OAuth 2.0 — Server-to-Server OAuth app using `account_id`, `client_id`, and `client_secret`. JWT is deprecated as of 2023 and must not be used for new integrations.
 
-**Required OAuth scopes**: depend on the enabled Zoom source capabilities for meetings, participants, users, and message activity. The connector must request the minimum scope set needed for the configured collection paths.
+**Required OAuth scopes**: must cover `GET /users`, `GET /metrics/meetings`, `GET /metrics/meetings/{meeting_uuid}/participants`, and `GET /chat/users/{zoom_user_id}/messages` for the connector's implemented collection paths.
 
 **Field naming**: snake_case — Zoom API returns mixed naming styles; fields are normalised to snake_case at Bronze level.
 
-**Why multiple tables**: Zoom exposes distinct synchronous and asynchronous activity shapes. `zoom_meetings` stores authoritative meeting instances, `zoom_meeting_participants` stores participant-level attendance evidence needed for duration metrics, `zoom_message_activity` stores mandatory async activity using the best source-supported path, `zoom_users` provides lightweight attribution support, and `zoom_collection_runs` records observability state.
+**Why multiple tables**: Zoom exposes distinct synchronous and asynchronous activity shapes. `zoom_meetings` stores authoritative meeting instances, `zoom_meeting_participants` stores participant-level attendance evidence needed for duration metrics, `zoom_message_activity` stores mandatory async activity using the implemented separate user-scoped path, `zoom_users` provides lightweight attribution support, and `zoom_collection_runs` records observability state.
 
 > **Collection policy**
-> Ongoing incremental collection is mandatory. Every newly discovered meeting must trigger meeting-scoped enrichment for detail and participants. Historical backfill is best-effort. Message activity is mandatory but collected through direct or aggregated activity endpoints when available, or through separate message or chat flows when those are the only supported source path.
+> Ongoing incremental collection is mandatory. Every newly discovered meeting must trigger meeting-scoped enrichment for detail and participants. Historical backfill is best-effort. Message activity is mandatory and is collected through a separate user-scoped message flow, not through meeting enrichment.
 
 ---
 
@@ -122,18 +122,18 @@ Participant-level attendance table collected from the per-meeting participant fl
 
 ### `zoom_message_activity` — Message activity
 
-Async activity table collected from the best source-supported Zoom message path. The connector must use a suitable direct or aggregated activity endpoint when Zoom provides one; otherwise it must collect message activity through separate message or chat flows. Message content is never stored.
+Async activity table collected from the implemented separate user-scoped Zoom message path. Message content is never stored.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `message_activity_id` | String | Stable unique identifier from direct event ID, aggregate key, or derived source key |
+| `message_activity_id` | String | Stable unique identifier from source event ID or a deterministic derived source key |
 | `zoom_user_id` | String | Zoom internal user ID when known |
 | `email` | String | User email when known |
 | `activity_date` | DateTime | Activity timestamp or aggregation date |
 | `channel_type` | String | Source-supported message surface classification |
 | `message_count` | Int | Count represented by this row |
-| `aggregation_level` | String | `event`, `conversation_day`, `user_day`, or other source-supported grain |
-| `collection_mode` | String | `direct_activity`, `aggregated_activity`, or `separate_chat_flow` |
+| `aggregation_level` | String | Source-supported message grain from the implemented message flow |
+| `collection_mode` | String | Always `separate_chat_flow` in the current implementation |
 | `linked_meeting_instance_key` | String | Nullable canonical meeting link only when provided reliably by source |
 | `linked_meeting_series_id` | String | Nullable source meeting series identifier preserved for traceability |
 | `linked_meeting_occurrence_id` | String | Nullable source meeting occurrence identifier preserved for traceability |
@@ -200,7 +200,7 @@ User support table collected from `GET /users`. This table is used for attributi
 | `retries_triggered` | Int | Retried enrichment or message work |
 | `api_calls` | Int | Total API calls made |
 | `errors` | Int | Errors encountered |
-| `limitation_summary` | String (JSON) | Aggregated source-capability limitations |
+| `limitation_summary` | String (JSON) | Aggregated source limitations and endpoint gaps |
 | `settings` | String (JSON) | Effective collection configuration |
 | `data_source` | String | Always `insight_zoom` |
 | `_version` | Int | Deduplication version (monotonic replay marker) |
@@ -308,11 +308,11 @@ The following unified Bronze tables are **not populated** by the Zoom connector:
 
 ## Open Questions
 
-### OQ-ZOOM-1: Message activity source capability variability
+### OQ-ZOOM-1: Message activity endpoint stability
 
-The PRD and DESIGN require message activity, but the exact collection path depends on Zoom source capability. Some tenants may expose suitable direct or aggregated message activity endpoints, while others may require separate chat or message collection flows.
+The current implementation uses a separate user-scoped message endpoint rather than switching among multiple message collection strategies.
 
-**Question**: Which message-capability profiles are common enough across target tenants to standardize in the initial implementation, and which should remain optional capability branches?
+**Question**: Are there tenant or plan-specific edge cases in the implemented message endpoint that require tighter handling for pagination, retention, or missing user coverage?
 
 ### OQ-ZOOM-2: Meeting identity consistency across endpoints
 
