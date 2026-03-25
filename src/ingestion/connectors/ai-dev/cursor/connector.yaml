@@ -129,9 +129,6 @@ streams:
         url_base: https://api.cursor.com
         path: /teams/audit-logs
         http_method: GET
-        request_parameters:
-          startTime: "{{ stream_interval.start_time }}"
-          endTime: "{{ stream_interval.end_time }}"
         request_headers:
           Content-Type: application/json
         authenticator:
@@ -225,9 +222,6 @@ streams:
           Content-Type: application/json
         authenticator:
           $ref: "#/definitions/basic_authenticator"
-        request_body_json:
-          startDate: "{{ stream_interval.start_time }}"
-          endDate: "{{ stream_interval.end_time }}"
       record_selector:
         type: RecordSelector
         extractor:
@@ -321,9 +315,6 @@ streams:
           Content-Type: application/json
         authenticator:
           $ref: "#/definitions/basic_authenticator"
-        request_body_json:
-          startDate: "{{ stream_interval.start_time }}"
-          endDate: "{{ stream_interval.end_time }}"
       record_selector:
         type: RecordSelector
         extractor:
@@ -448,9 +439,6 @@ streams:
           Content-Type: application/json
         authenticator:
           $ref: "#/definitions/basic_authenticator"
-        request_body_json:
-          startDate: "{{ stream_interval.start_time }}"
-          endDate: "{{ stream_interval.end_time }}"
       record_selector:
         type: RecordSelector
         extractor:

@@ -139,7 +139,7 @@ The Cursor Admin API uses Basic authentication. The API key is encoded as `base6
 
 - [ ] `p2` - **ID**: `cpt-insightspec-constraint-cursor-post-endpoints`
 
-Two of the four endpoints (`filtered-usage-events`, `daily-usage-data`) use HTTP POST with a JSON request body for date range and pagination parameters. This requires `request_body_json` configuration in the manifest rather than URL query parameters. The body fields are: `startDate` (epoch ms), `endDate` (epoch ms), `page` (int), `pageSize` (int).
+Two of the four endpoints (`filtered-usage-events`, `daily-usage-data`) use HTTP POST with a JSON request body for date range and pagination parameters. The body fields are: `startDate` (epoch ms), `endDate` (epoch ms), `page` (int), `pageSize` (int). Date range fields (`startDate`/`endDate`) are injected exclusively by the `incremental_sync` section via `start_time_option`/`end_time_option` (with `inject_into: body_json`) — they MUST NOT also appear in the requester's `request_body_json` to avoid duplicate key collisions. Pagination fields (`page`/`pageSize`) are injected by the paginator.
 
 #### API Rate Limiting
 
@@ -319,11 +319,10 @@ streams:
         authenticator:
           type: BasicHttpAuthenticator
           username: "{{ config['api_key'] }}"
-        request_body_json:
-          startDate: "{{ stream_interval.start_time }}"
-          endDate: "{{ stream_interval.end_time }}"
-          page: "{{ next_page_token['next_page_token'] }}"
-          pageSize: 500
+        # Date params (startDate/endDate) injected by incremental_sync
+        # via start_time_option/end_time_option (inject_into: body_json).
+        # Pagination (page/pageSize) injected by paginator.
+        # Do NOT duplicate these in request_body_json — causes key collision.
       record_selector:
         type: RecordSelector
         extractor:
