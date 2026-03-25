@@ -81,8 +81,8 @@ The key analytics challenge is that Jira issues are mutable — status, assignee
 - Extract Jira issues with core fields, custom fields, and complete field change history
 - Extract worklogs, comments, sprint metadata, project directory, and issue links
 - Incremental extraction using `updated` timestamp as cursor for issues and changelogs
-- Identity resolution via `email` from Jira user directory, with `account_id` as Atlassian-ecosystem fallback
-- Support for both Jira Cloud (API v3) and Jira Server/Data Center (API v2)
+- Identity resolution via `email` from Jira user directory, with platform-specific user ID as fallback (`accountId` on Cloud, `key` on Server/Data Center)
+- Support for both Jira Cloud (API v3) and Jira Server/Data Center (API v2) with environment-specific identity anchors
 
 ### 1.4 Glossary
 
@@ -92,7 +92,8 @@ The key analytics challenge is that Jira issues are mutable — status, assignee
 | Jira Software Agile API | Separate API (`/rest/agile/1.0/`) for boards, sprints, and agile-specific data. |
 | Changelog | Per-issue record of every field change (status, assignee, priority, sprint, etc.). Each changelog entry contains one or more field-level changes grouped by a single user action. |
 | Worklog | Time logged by a user against a specific issue, recording who worked, when, and for how long. |
-| Atlassian Account ID | Unique, opaque identifier for a user across the Atlassian platform (Jira, Confluence, Bitbucket). Used as internal user key in Jira Cloud. |
+| Atlassian Account ID (`accountId`) | Unique, opaque identifier for a user across the Atlassian platform (Jira, Confluence, Bitbucket). Used as internal user key in **Jira Cloud only**. Does not exist in Jira Server/Data Center. |
+| User Key (`key`) | Unique, stable identifier for a user in **Jira Server/Data Center**. Not present in Jira Cloud (deprecated and removed). |
 | Classic vs Next-gen | Two Jira project models with different custom field IDs for story points and sprint assignment. Classic uses `story_points` or custom fields; Next-gen uses `customfield_10016`. |
 | JQL | Jira Query Language — used to filter issues in search requests. |
 | Bronze Table | Raw data table in the destination, preserving source-native field names and types without transformation. |
@@ -127,7 +128,7 @@ The key analytics challenge is that Jira issues are mutable — status, assignee
 
 **Ref**: `cpt-insightspec-actor-identity-manager`
 
-**Role**: Resolves `email` from Jira Bronze user tables to canonical `person_id` in Silver step 2. Enables cross-system joins (Jira + YouTrack + GitHub + M365 + Slack, etc.). When email is suppressed by Atlassian privacy controls, `account_id` may serve as a fallback within the Atlassian ecosystem.
+**Role**: Resolves `email` from Jira Bronze user tables to canonical `person_id` in Silver step 2. Enables cross-system joins (Jira + YouTrack + GitHub + M365 + Slack, etc.). When email is unavailable, the platform-specific user ID (`accountId` on Cloud, `key` on Server/DC) serves as a fallback within the Atlassian ecosystem.
 
 ## 3. Operational Concept & Environment
 
@@ -154,7 +155,7 @@ The key analytics challenge is that Jira issues are mutable — status, assignee
 - Extraction of Jira user directory for identity resolution
 - Connector execution monitoring via collection runs stream
 - Incremental sync using `updated` timestamp as cursor
-- Identity resolution via `email` and `account_id`
+- Identity resolution via `email` and platform-specific user ID (`accountId` on Cloud, `key` on Server/DC)
 - Bronze-layer table schemas for all streams
 - Support for both Jira Cloud (API v3) and Jira Server/Data Center (API v2)
 
@@ -286,7 +287,7 @@ The connector **MUST** extract issue links (dependencies and relationships) for 
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-jira-user-extraction`
 
-The connector **MUST** extract the Jira user directory, including: Atlassian account ID, email, display name, account type, and active status.
+The connector **MUST** extract the Jira user directory, including: user ID (`accountId` on Cloud, `key` on Server/DC), email (when available), display name, account type (Cloud only), and active status.
 
 **Rationale**: The user directory provides the identity attributes needed to associate changelogs, worklogs, and comments with source users and to support downstream identity resolution via the Identity Manager.
 
@@ -344,16 +345,21 @@ The connector **MUST** implement request throttling with exponential backoff and
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-jira-identity-key`
 
-All user-attributed streams **MUST** include `account_id` as a non-null user reference that joins to the user directory. The `account_id` is the **unconditional identity anchor** — it is the primary key in `jira_user` and the join key across all user-attributed Bronze tables.
+All user-attributed streams **MUST** include a non-null `user_id` field that joins to the user directory. The `user_id` value is environment-specific:
 
-The user directory **MUST** include `email` when available from the Jira API. When Atlassian privacy controls suppress the email, the connector **MUST** still emit the user record with `email = null` and a valid `account_id`. The connector **MUST NOT** skip or fail on users with suppressed email.
+- **Jira Cloud (API v3)**: `user_id` = `accountId` (Atlassian Account ID — immutable, shared across Jira, Confluence, Bitbucket)
+- **Jira Server/Data Center (API v2)**: `user_id` = `key` (user key — stable internal identifier; `accountId` does not exist in Server/DC)
+
+The user directory **MUST** include `email` when available from the Jira API. The connector **MUST NOT** skip or fail on users with unavailable email:
+- **Jira Cloud**: Atlassian privacy controls suppress email by default for most users. The connector **MUST** emit the user record with `email = null` and a valid `accountId`.
+- **Jira Server/DC**: Email is typically available but may be restricted by admin policy. The connector **MUST** emit the user record with `email = null` and a valid `key` when email is unavailable.
 
 The Identity Manager (Silver step 2) resolves identity as follows:
 1. If `email` is available: link to the canonical `person_id` via the standard email resolution path.
-2. If `email` is suppressed: store the `account_id` as an isolated node in the identity graph. The user appears in analytics as a unique but non-deidentified contributor (e.g., "Jira User {account_id}").
-3. If the same `account_id` later becomes linkable (e.g., via Atlassian OAuth login to the platform), the Identity Manager retroactively merges the node with the resolved `person_id`, backfilling historical activity attribution.
+2. If `email` is unavailable: store the `user_id` as an isolated node in the identity graph. The user appears in analytics as a unique but non-deidentified contributor (e.g., "Jira User {user_id}").
+3. If the same `user_id` later becomes linkable (e.g., via Atlassian OAuth login on Cloud, or email becoming available on Server/DC), the Identity Manager retroactively merges the node with the resolved `person_id`, backfilling historical activity attribution.
 
-**Rationale**: Atlassian Cloud hides user emails by default under privacy controls. Relying on `email` as a mandatory field would exclude a significant fraction of users from analytics. The `account_id` is immutable and shared across the Atlassian platform (Jira, Confluence, Bitbucket), guaranteeing that intra-ecosystem activity is always joinable. Deferred email resolution via OAuth preserves the ability to retroactively link users without blocking current analytics.
+**Rationale**: Jira Cloud and Server/Data Center use fundamentally different user identity models. Cloud uses `accountId` (opaque, immutable, Atlassian-wide); Server/DC uses `key` (stable, instance-scoped). The connector must abstract this difference behind a unified `user_id` field so that downstream analytics and the Silver layer do not need to branch on deployment type. Email remains the canonical cross-system key but cannot be relied upon as mandatory in either environment.
 
 **Actors**: `cpt-insightspec-actor-identity-manager`
 
@@ -419,7 +425,7 @@ All timestamps persisted in the Bronze layer **MUST** be stored in UTC (ISO 8601
 
 **Stability**: stable
 
-**Description**: Ten Bronze streams with defined schemas — `jira_issue`, `jira_issue_history`, `jira_issue_ext`, `jira_worklogs`, `jira_comments`, `jira_projects`, `jira_issue_links`, `jira_sprints`, `jira_user`, `jira_collection_runs`. All user-attributed streams reference `account_id` as the user key. Issues use `updated` as the cursor field. The URN-based primary key for issue records follows the format `urn:jira:{tenant_id}:{source_instance_id}:{issue_key}` (see FR `cpt-insightspec-fr-jira-instance-context`).
+**Description**: Ten Bronze streams with defined schemas — `jira_issue`, `jira_issue_history`, `jira_issue_ext`, `jira_worklogs`, `jira_comments`, `jira_projects`, `jira_issue_links`, `jira_sprints`, `jira_user`, `jira_collection_runs`. All user-attributed streams reference `user_id` as the user key (`accountId` on Cloud, `key` on Server/DC). Issues use `updated` as the cursor field. The URN-based primary key for issue records follows the format `urn:jira:{tenant_id}:{source_instance_id}:{issue_key}` (see FR `cpt-insightspec-fr-jira-instance-context`).
 
 **Field-level schemas**: Defined in [`jira.md`](../jira.md) (Bronze table definitions with column types, descriptions, and API field mappings).
 
@@ -527,10 +533,10 @@ All timestamps persisted in the Bronze layer **MUST** be stored in UTC (ISO 8601
 - [ ] Sprint metadata extracted from Agile boards
 - [ ] Project directory extracted with project type and style
 - [ ] Issue links extracted for dependency analysis
-- [ ] User directory extracted with `account_id` and `email` (where available)
+- [ ] User directory extracted with `user_id` (`accountId` on Cloud, `key` on Server/DC) and `email` (where available)
 - [ ] Custom field values extracted as key-value pairs
 - [ ] Incremental sync on second run extracts only newly updated issues (no full reload)
-- [ ] `account_id` is present in all user-attributed records
+- [ ] `user_id` is present and non-null in all user-attributed records
 - [ ] `source_instance_id` is present in all records for multi-instance support
 - [ ] Collection run log records success, record counts, and timing for each run
 
@@ -549,8 +555,8 @@ All timestamps persisted in the Bronze layer **MUST** be stored in UTC (ISO 8601
 
 - The Jira instance is accessible via REST API with sufficient permissions for the configured project scope
 - Jira Cloud uses API v3; Jira Server/Data Center uses API v2 with equivalent functionality for the required endpoints
-- `account_id` is a stable, non-null, immutable identifier for all Jira users across the Atlassian platform (Jira, Confluence, Bitbucket); it is the unconditional identity anchor
-- `email` is suppressed by default in Jira Cloud under Atlassian privacy controls; the connector treats email as optional and falls back to `account_id`-only identity when email is unavailable
+- Jira Cloud uses `accountId` as the stable, non-null, immutable user identifier shared across the Atlassian platform (Jira, Confluence, Bitbucket); Jira Server/Data Center uses `key` as the stable user identifier (instance-scoped, not cross-platform)
+- `email` is suppressed by default in Jira Cloud under Atlassian privacy controls and may be restricted by admin policy on Server/DC; the connector treats email as optional and falls back to `user_id`-only identity when email is unavailable
 - The changelog API returns the complete field change history for each issue, not a truncated subset
 - Story points field ID differs between Classic and Next-gen projects; the connector uses hybrid auto-detection with operator fallback for ambiguous cases (see FR `cpt-insightspec-fr-jira-story-points-detection`)
 - Sprint-to-issue assignment is tracked as full history via changelog entries for the `Sprint` field; current-only assignment is insufficient for carry-over analysis (see FR `cpt-insightspec-fr-jira-sprint-history`)
@@ -563,7 +569,8 @@ All timestamps persisted in the Bronze layer **MUST** be stored in UTC (ISO 8601
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Atlassian privacy controls suppress email for some users | Identity resolution fails for affected users; analytics gaps in cross-system joins | Use `account_id` as fallback within Atlassian ecosystem; surface coverage gaps to operators |
+| Email unavailable (Cloud: privacy controls; Server/DC: admin policy) | Identity resolution fails for affected users; analytics gaps in cross-system joins | Use platform-specific `user_id` (`accountId` / `key`) as fallback; surface coverage gaps to operators; support deferred merge when email becomes available |
+| Jira Server/DC identity model differs from Cloud | `accountId` does not exist in Server/DC; using it unconditionally would break Server/DC support | Abstract behind unified `user_id` field; connector detects API version and maps to `accountId` (Cloud) or `key` (Server/DC) — see FR `cpt-insightspec-fr-jira-identity-key` |
 | Story points field ID varies across instances and project types | Story points data missing or extracted from wrong field | Auto-detect via project style metadata or require explicit per-instance configuration |
 | Large Jira instances with 100K+ issues | Initial full load takes extended time; risk of timeout or rate limiting | Paginate with appropriate page size; support project-scoped extraction; handle HTTP 429 with backoff |
 | Changelog API fan-out per issue (N+1 problem) | Bulk updates (e.g., manager moves 1000 issues to backlog) produce a large delta window; each issue requires separate changelog, worklog, and comment requests, almost guaranteeing HTTP 429 | Implement concurrency limits, exponential backoff, and request batching — see FR `cpt-insightspec-fr-jira-changelog-throttling`; monitor API call counts in collection run logs |
@@ -580,7 +587,7 @@ All open questions from the initial draft have been resolved and incorporated in
 
 | ID | Summary | Resolution | Incorporated In |
 |----|---------|------------|-----------------|
-| OQ-JIRA-1 | `account_id` vs email as primary identity key | `account_id` is the unconditional anchor (PK in `jira_user`). Email resolved when available; suppressed users stored as isolated nodes with deferred retroactive merge via OAuth. | FR `cpt-insightspec-fr-jira-identity-key` |
+| OQ-JIRA-1 | `account_id` vs email as primary identity key | Environment-specific `user_id` is the identity anchor: `accountId` on Cloud, `key` on Server/DC. Email resolved when available; unavailable users stored as isolated nodes with deferred retroactive merge. | FR `cpt-insightspec-fr-jira-identity-key` |
 | OQ-JIRA-2 | Multi-instance collision prevention | URN-based surrogate key `urn:jira:{tenant_id}:{source_instance_id}:{issue_key}` as PK. Original fields preserved as separate columns for filtering. | FR `cpt-insightspec-fr-jira-instance-context` |
 | OQ-JIRA-3 | Story points field detection | Hybrid strategy: Next-gen → `customfield_10016`; Classic → auto-detect via field metadata API; ambiguous → operator selects during configuration. | FR `cpt-insightspec-fr-jira-story-points-detection` |
 | OQ-JIRA-4 | Sprint-issue membership history | Full historical: all sprint assignment changes captured via changelog (`field_name = "Sprint"`). Current-only assignment rejected — carry-over analysis requires the complete transition history. | FR `cpt-insightspec-fr-jira-sprint-history` |

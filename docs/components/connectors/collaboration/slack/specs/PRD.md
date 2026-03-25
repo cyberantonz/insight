@@ -193,12 +193,12 @@ The connector **MUST** collect thread reply counts and author attribution by cal
 
 **Architectural constraint**: The Airbyte Declarative Connector framework (YAML) executes parent-child stream relationships synchronously — the parent stream (`conversations.history`) yields records, and the child stream (`conversations.replies`) processes each record sequentially before the parent advances. True async workers or parallel queues are not supported in Declarative YAML.
 
-The connector **MUST** implement the following mitigation within the synchronous model:
-1. Thread reply collection is modelled as a child stream of `conversations.history`, partitioned by `thread_ts` for messages where `reply_count > 0`.
-2. The child stream **MUST** apply aggressive rate limit self-throttling (e.g., hard cap at 10–15 requests/min for thread replies) to preserve Tier 3 budget for the parent channel scanning.
-3. If thread reply volume exceeds what can be collected within the rate limit budget, the connector **SHOULD** prioritize channels with higher message volume and **MUST** log skipped threads with their `thread_ts` for potential retry in a follow-up run.
+The connector **MUST** enforce rate-limit-safe reply collection that:
+1. Preserves the primary channel scanning progress — thread reply fetching **MUST NOT** monopolize the shared Tier 3 rate limit budget.
+2. Supports partial completion — if reply volume exceeds the available rate limit budget, the connector **MUST** log skipped threads for potential retry in a follow-up run rather than failing the entire sync.
+3. Prioritizes channels with higher message volume when budget is constrained.
 
-**Implementation note**: If the synchronous parent-child model in Declarative YAML proves to be an unacceptable bottleneck for large workspaces (>1000 threaded messages/day), the connector **SHOULD** be migrated to the Airbyte Python CDK, which supports custom state management, request batching, and concurrency control. This decision is deferred to DESIGN.
+**Architectural constraint**: The Airbyte Declarative Connector framework executes parent-child stream relationships synchronously. Concrete throttling parameters, batching strategy, and the decision on whether to migrate to Python CDK for async support are deferred to DESIGN.
 
 **Rationale**: In active workspaces, thousands of messages per day may have threaded replies. Each requires a separate `conversations.replies` call sharing the Tier 3 rate limit (50 req/min) with `conversations.history`. Without explicit throttling, thread collection will monopolize the rate limit budget and stall channel scanning.
 
@@ -211,7 +211,7 @@ The connector **MUST** implement the following mitigation within the synchronous
 For Enterprise Grid workspaces, the connector **MUST** implement a hybrid collection strategy:
 
 1. **Primary (fast path)**: Extract `total_chat_messages` from `admin.analytics.getFile` with `type=member`. This provides per-user daily totals with minimal API cost.
-2. **Optional deep enrichment**: When the operator enables "Deep Channel Analytics" in the connection configuration, a **separate Airbyte connection** (using the same connector but configured as a Standard-mode sync targeting the same workspace) runs on a slower schedule (e.g., weekly or on-demand) to enrich the data with per-channel-type breakdown (`direct_messages`, `group_chat_messages`, `channel_posts`, `channel_replies`). This is not a background thread within the same connector run — it is an independent connection with its own schedule and rate limit budget.
+2. **Optional deep enrichment**: When the operator enables "Deep Channel Analytics" in the connection configuration, a **separate Airbyte connection** (using the same connector configured as a Standard-mode sync targeting the same workspace) runs on a slower schedule to enrich the data with per-channel-type breakdown (`direct_messages`, `group_chat_messages`, `channel_posts`, `channel_replies`). This is an independent connection with its own schedule and rate limit budget — not a background thread within the primary sync.
 3. When deep enrichment has not yet run for a given date, per-channel-type fields remain `null` while `total_chat_messages` is populated from the analytics file. Once the enrichment connection processes the same date, it upserts the per-type breakdown via the same deduplication key.
 
 **Architectural constraint**: The Airbyte Declarative framework does not support async background jobs within a single connector run. The hybrid strategy is implemented as two separate Airbyte connections — one for fast Enterprise Grid totals (daily), one for slow per-channel enrichment (weekly/on-demand) — writing to the same Bronze table with upsert semantics.
@@ -266,7 +266,7 @@ The connector **MUST** extract the Slack user directory from `users.list`, inclu
 
 The `collab_users` table **MUST** preserve historical state changes using the SCD Type 2 pattern. Each user record **MUST** include `valid_from` (timestamp when this state became effective) and `valid_to` (timestamp when this state was superseded, or `null` for the current record). When the connector detects a change in a user's attributes (email, role, active status, display name) between the current `users.list` response and the most recent stored record, it **MUST** close the previous record (set `valid_to = collected_at`) and insert a new record with `valid_from = collected_at`.
 
-The Airbyte sync mode for `collab_users` **MUST** be **Full Refresh | Append** (not overwrite), so that each run appends the current snapshot. SCD Type 2 versioning **MUST** be applied at the Bronze ingestion layer via destination MERGE logic that compares incoming records against the existing table, closes superseded records (set `valid_to = collected_at`), and inserts new records (set `valid_from = collected_at`). This approach is required because Declarative YAML does not natively support stateful change detection; connector-level SCD would require Python CDK migration.
+The Airbyte sync mode for `collab_users` **MUST** be **Full Refresh | Append** (not overwrite), so that each run appends the current snapshot. SCD Type 2 versioning **MUST** be applied so that superseded records are closed (`valid_to` set) and new records are opened (`valid_from` set). The implementation approach (destination-level MERGE logic vs. connector-level change detection) is deferred to DESIGN; note that Declarative YAML does not natively support stateful change detection, so destination-level MERGE is the expected path unless the connector migrates to Python CDK.
 
 **Rationale**: `users.list` is a full refresh endpoint — it returns current state only. Without SCD Type 2, a user's email change (e.g., name change after marriage) or role change (promoted to admin) silently overwrites history. Historical analytics ("how many admins did we have 6 months ago?", "which email was this person using when they sent those messages?") require point-in-time user state.
 
@@ -332,9 +332,9 @@ Every record emitted by the connector **MUST** include `source_instance_id` (ide
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-slack-channel-type-cache`
 
-The connector **MUST** resolve channel types by caching the full `conversations.list` response as an in-memory hash map (`channel_id → channel_type`) at the start of each sync run. The connector **MUST NOT** rely on channel ID prefix conventions (e.g., `C` for public, `G` for private, `D` for DM) for type determination.
+The connector **MUST** resolve channel types from authoritative Slack metadata (`conversations.list`) and **MUST NOT** rely on channel ID prefix conventions (e.g., `C` for public, `G` for private, `D` for DM) for type determination. The channel directory **MUST** be refreshed at the start of each sync run and used to attribute channel type to every collected message.
 
-**Rationale**: Slack's internal ID prefix conventions have changed over time and are not contractually stable — Slack Connect further blurred the boundaries between channel types. Only the `conversations.list` response provides authoritative `channel_type` metadata. Caching it once per run avoids per-message API calls for type resolution.
+**Rationale**: Slack's internal ID prefix conventions have changed over time and are not contractually stable — Slack Connect further blurred the boundaries between channel types. Only the `conversations.list` response provides authoritative `channel_type` metadata.
 
 **Actors**: `cpt-insightspec-actor-slack-api`
 
@@ -479,7 +479,7 @@ The connector **MUST** extract activity for all non-bot users in the workspace o
 2. Connector refreshes user directory from `users.list`, filtering out bots; applies SCD Type 2 versioning for attribute changes
 3. Connector refreshes channel list from `conversations.list` and caches as in-memory hash map (`channel_id → channel_type`) for message type attribution
 4. For each channel in the lookback window: read `conversations.history`, count parent messages per user per day per channel type
-5. For each parent message with `reply_count > 0`: synchronously call `conversations.replies` with self-throttling (10–15 req/min cap, shared Tier 3 budget); count reply authors per user per day
+5. For each parent message with `reply_count > 0`: fetch `conversations.replies` with rate-limit-aware throttling (shared Tier 3 budget); count reply authors per user per day
 6. Parse huddle events (`subtype = "huddle_thread"`) for meeting activity
 7. Aggregate counts into `collab_chat_activity` and `collab_meeting_activity` records
 8. Write records with upsert semantics (Incremental | Append + Deduped)
@@ -582,7 +582,7 @@ The following checklist domains have been evaluated and determined not applicabl
 |--------|--------|
 | **Security (SEC)** | The connector handles a single Bot Token, stored as `airbyte_secret` by the Airbyte framework. No custom authentication, authorization, or encryption logic exists in the connector. Credential storage and secret management are delegated to the Airbyte platform. |
 | **Safety (SAFE)** | Pure data extraction pipeline. No interaction with physical systems, no potential for harm to people, property, or environment. |
-| **Performance (PERF)** | Batch connector with rate-limit-aware collection. No caching, pooling, or latency optimization needed beyond respecting `Retry-After` headers (covered in Section 3.1). |
+| **Performance (PERF)** | Batch connector where rate-limit management is the primary performance concern. Request throttling, `Retry-After` compliance, and thread reply rate budget allocation are covered in Section 3.1 and FRs `cpt-insightspec-fr-slack-thread-batching`, `cpt-insightspec-fr-slack-chat-standard`. No additional caching, pooling, or latency optimization beyond rate-limit controls is required. |
 | **Reliability (REL)** | Idempotent extraction via deduplication keys. No distributed state, no transactions. Recovery is handled by re-running the sync with the same lookback window (Airbyte framework manages state). |
 | **Usability (UX)** | No user-facing interface. Configuration is a token and strategy selection in the Airbyte UI. No accessibility, internationalization, or inclusivity requirements apply. |
 | **Compliance (COMPL)** | Slack user emails are personal data under GDPR. Message content is NOT extracted — only aggregate counts. Retention, deletion, and data subject rights are delegated to the Airbyte platform and destination operator. The connector must not store credentials outside the platform's secret management. |
