@@ -58,7 +58,7 @@ The Cursor Admin API provides four data areas:
 - **Usage events** — individual AI invocation events with model, cost, and optional token breakdown
 - **Daily usage** — daily per-user aggregated activity metrics (chat, composer, agent, tab completions, lines added/deleted)
 
-**Expected data volumes**: Typical teams of 10–500 users generate 500–50,000 usage events per day and 10–500 daily usage rows per day. Audit log volume is low (tens of events per day). Members endpoint returns one row per team member.
+The API uses Basic authentication with a team API key. Usage and daily-usage data require date-range parameters; audit logs use time-range parameters.
 
 **Target Users**:
 
