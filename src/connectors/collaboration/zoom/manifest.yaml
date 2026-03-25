@@ -119,6 +119,12 @@ definitions:
           fields:
             - type: AddedFieldDefinition
               path:
+                - tenant_id
+              value: "{{ config['insight_tenant_id'] }}"
+        - type: AddFields
+          fields:
+            - type: AddedFieldDefinition
+              path:
                 - _airbyte_data_source
               value: insight_zoom
         - type: AddFields
@@ -141,6 +147,7 @@ definitions:
           error_handler:
             $ref: "#/definitions/base_error_handler"
           request_parameters:
+            type: past
             page_size: "{{ config['page_size'] }}"
         paginator:
           type: DefaultPaginator
@@ -160,6 +167,32 @@ definitions:
             type: DpathExtractor
             field_path:
               - meetings
+      incremental_sync:
+        type: DatetimeBasedCursor
+        cursor_field: end_time
+        cursor_datetime_formats:
+          - "%Y-%m-%dT%H:%M:%SZ"
+          - "%Y-%m-%dT%H:%M:%S%z"
+        start_datetime:
+          type: MinMaxDatetime
+          datetime: "{{ config['start_date'] }}"
+          datetime_format: "%Y-%m-%d"
+        end_datetime:
+          type: MinMaxDatetime
+          datetime: "{{ now_utc().strftime('%Y-%m-%d') }}"
+          datetime_format: "%Y-%m-%d"
+        datetime_format: "%Y-%m-%d"
+        start_time_option:
+          type: RequestOption
+          field_name: from
+          inject_into: request_parameter
+        end_time_option:
+          type: RequestOption
+          field_name: to
+          inject_into: request_parameter
+        lookback_window: "P7D"
+        step: "P30D"
+        cursor_granularity: "P1D"
       primary_key:
         - meeting_instance_key
       schema_loader:
@@ -181,6 +214,12 @@ definitions:
               path:
                 - meeting_uuid
               value: "{{ record.get('uuid') }}"
+        - type: AddFields
+          fields:
+            - type: AddedFieldDefinition
+              path:
+                - tenant_id
+              value: "{{ config['insight_tenant_id'] }}"
         - type: AddFields
           fields:
             - type: AddedFieldDefinition
@@ -244,6 +283,7 @@ definitions:
                     http_codes:
                       - 404
           request_parameters:
+            type: past
             page_size: "{{ config['page_size'] }}"
         paginator:
           type: DefaultPaginator
@@ -314,6 +354,12 @@ definitions:
               path:
                 - attendance_duration_seconds
               value: "{{ record.get('duration') }}"
+        - type: AddFields
+          fields:
+            - type: AddedFieldDefinition
+              path:
+                - tenant_id
+              value: "{{ config['insight_tenant_id'] }}"
         - type: AddFields
           fields:
             - type: AddedFieldDefinition
@@ -410,6 +456,12 @@ definitions:
           fields:
             - type: AddedFieldDefinition
               path:
+                - tenant_id
+              value: "{{ config['insight_tenant_id'] }}"
+        - type: AddFields
+          fields:
+            - type: AddedFieldDefinition
+              path:
                 - _airbyte_data_source
               value: insight_zoom
             - type: AddedFieldDefinition
@@ -430,32 +482,38 @@ spec:
     $schema: http://json-schema.org/draft-07/schema#
     required:
       - account_id
+      - insight_tenant_id
       - client_id
       - client_secret
       - start_date
     properties:
+      insight_tenant_id:
+        type: string
+        title: Insight Tenant ID
+        description: Insight tenant identifier stamped onto every emitted record.
+        order: 0
       account_id:
         type: string
         title: Zoom Account ID
         description: Zoom Server-to-Server OAuth account ID.
-        order: 0
+        order: 1
       client_id:
         type: string
         title: Zoom Client ID
         description: Zoom Server-to-Server OAuth client ID.
-        order: 1
+        order: 2
       client_secret:
         type: string
         title: Zoom Client Secret
         description: Zoom Server-to-Server OAuth client secret.
         airbyte_secret: true
-        order: 2
+        order: 3
       start_date:
         type: string
         title: Start Date
         description: Earliest date to request during initial sync or best-effort historical backfill.
         format: date
-        order: 3
+        order: 4
       page_size:
         type: integer
         title: Page Size
@@ -463,7 +521,7 @@ spec:
         default: 100
         minimum: 1
         maximum: 300
-        order: 4
+        order: 5
     additionalProperties: true
 
 metadata:
@@ -479,6 +537,10 @@ schemas:
     type: object
     $schema: http://json-schema.org/draft-07/schema#
     properties:
+      tenant_id:
+        type:
+          - string
+          - "null"
       zoom_user_id:
         type:
           - string
@@ -525,6 +587,10 @@ schemas:
     type: object
     $schema: http://json-schema.org/draft-07/schema#
     properties:
+      tenant_id:
+        type:
+          - string
+          - "null"
       meeting_instance_key:
         type: string
       meeting_series_id:
@@ -606,6 +672,10 @@ schemas:
     type: object
     $schema: http://json-schema.org/draft-07/schema#
     properties:
+      tenant_id:
+        type:
+          - string
+          - "null"
       meeting_instance_key:
         type: string
       meeting_series_id:
@@ -668,6 +738,10 @@ schemas:
     type: object
     $schema: http://json-schema.org/draft-07/schema#
     properties:
+      tenant_id:
+        type:
+          - string
+          - "null"
       message_activity_id:
         type: string
       zoom_user_id:
