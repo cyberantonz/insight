@@ -1,7 +1,7 @@
 # Zoom Connector Specification
 
 > Version 2.1 — March 2026
-> Based on: [`/Users/voltenko/Projects/Work/insight/docs/components/connectors/collaboration/zoom/specs/PRD.md`](/Users/voltenko/Projects/Work/insight/docs/components/connectors/collaboration/zoom/specs/PRD.md), [`/Users/voltenko/Projects/Work/insight/docs/components/connectors/collaboration/zoom/specs/DESIGN.md`](/Users/voltenko/Projects/Work/insight/docs/components/connectors/collaboration/zoom/specs/DESIGN.md), and [`/Users/voltenko/Projects/Work/insight/src/connectors/collaboration/zoom/manifest.yaml`](/Users/voltenko/Projects/Work/insight/src/connectors/collaboration/zoom/manifest.yaml)
+> Based on: [`PRD.md`](./specs/PRD.md), [`DESIGN.md`](./specs/DESIGN.md), and [`manifest.yaml`](../../../../../src/connectors/collaboration/zoom/manifest.yaml)
 
 Standalone specification for the Zoom collaboration connector. This document is intentionally aligned to the current declarative manifest so that an agent can regenerate the same connector behavior from the specs with minimal ambiguity.
 

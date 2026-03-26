@@ -70,9 +70,9 @@ Message activity is also required, but message content is not. The connector sho
 
 **Success Criteria**:
 
-- Newly discovered Zoom meetings are enriched with meeting details and participant data within 24 hours of discovery for 95% of meetings over a 90-day period (Baseline: no Zoom connector; Target: v1.0)
-- Participant-level attendance duration is available for at least 95% of collected meetings that expose participant detail through the configured Zoom account over a 90-day period (Baseline: unavailable; Target: v1.0)
-- Per-user Zoom message activity counts are available for analyst use within 24 hours of source availability for 95% of collection days over a 90-day period (Baseline: unavailable; Target: v1.0)
+- Newly discovered Zoom meetings are enriched with meeting details and participant data within 24 hours of discovery (Baseline: no Zoom connector; Target: v1.0)
+- Participant-level attendance duration is available for collected meetings that expose participant detail through the configured Zoom account (Baseline: unavailable; Target: v1.0)
+- Per-user Zoom message activity counts are available for analyst use within 24 hours of source availability (Baseline: unavailable; Target: v1.0)
 
 **Capabilities**:
 
@@ -90,6 +90,7 @@ Message activity is also required, but message content is not. The connector sho
 | Meeting Enrichment | Follow-up collection for a discovered meeting, including meeting detail and participant records. |
 | Participant Attendance Duration | The amount of time an identified participant was present in a specific meeting, derived from source-provided attendance detail. |
 | Message Activity | Zoom chat or messaging events and counts attributed to users; excludes message body content in this PRD. |
+| User-Scoped Message Flow | A collection path that iterates over known Zoom users and collects their message activity independently from meeting enrichment. |
 | Historical Backfill | Best-effort retrieval of older Zoom activity that may still be available from the source at the time the connector is first configured. |
 
 ## 2. Actors
@@ -136,6 +137,7 @@ Message activity is also required, but message content is not. The connector sho
 ### 3.1 Module-Specific Environment Constraints
 
 - Requires a Zoom account configuration and application scopes that allow meeting discovery, participant access, user lookup, and message activity collection
+- Meeting discovery and participant collection require Zoom Dashboard API endpoints (`/metrics/meetings`), which are available only on Business, Education, or Enterprise plans; Pro-plan accounts do not have access to these endpoints
 - The connector operates as a batch collector, not a real-time event stream
 - The connector MUST run frequently enough to preserve newly available meeting and message activity before source-side retention or visibility limits reduce completeness
 - Historical backfill is best-effort and depends on source retention, account permissions, and endpoint availability at onboarding time
@@ -254,6 +256,8 @@ The connector **MUST NOT** store Zoom message body content when satisfying messa
 
 The connector **MUST** support incremental collection so that ongoing runs process newly available meetings and message activity without requiring full historical reloads, using meeting-scoped enrichment plus a separate user-scoped message flow.
 
+**Known limitation**: The current manifest implements stateful incremental sync only for meetings. Message activity uses a request-bounded window (`start_date` to `now`) without Airbyte state tracking, which effectively reprocesses the full configured window on every run. This is acceptable for v1.0 but should be revisited for large tenants.
+
 **Rationale**: Incremental collection is required for sustainable operation and for timely enrichment of new Zoom activity.
 
 **Actors**: `cpt-insightspec-actor-zoom-operator`
@@ -318,9 +322,7 @@ The connector **MUST** limit Zoom user collection to attributes needed for activ
 
 - [ ] `p1` - **ID**: `cpt-insightspec-nfr-zoom-freshness`
 
-The connector **MUST** make newly collected meeting and message activity available to downstream consumers within 24 hours of source visibility for 95% of collection days under normal operating conditions.
-
-**Threshold**: 95% of eligible days achieve end-to-end Bronze availability within 24 hours of source visibility over a rolling 90-day period.
+The connector **MUST** make newly collected meeting and message activity available to downstream consumers within 24 hours of source visibility under normal operating conditions.
 
 **Rationale**: Collaboration analytics lose value when Zoom activity arrives too late for reporting and operational review.
 
@@ -328,9 +330,7 @@ The connector **MUST** make newly collected meeting and message activity availab
 
 - [ ] `p1` - **ID**: `cpt-insightspec-nfr-zoom-enrichment-completeness`
 
-The connector **MUST** achieve complete meeting enrichment for at least 95% of newly discovered meetings, where completeness means the meeting has corresponding detail and participant data or an explicit source-side explanation for why a component is unavailable.
-
-**Threshold**: 95% of newly discovered meetings meet the completeness rule over a rolling 90-day period.
+The connector **MUST** achieve meeting enrichment for newly discovered meetings, where completeness means the meeting has corresponding detail and participant data or an explicit source-side explanation for why a component is unavailable.
 
 **Rationale**: The primary business requirement depends on full per-meeting evidence, not just partial discovery.
 
@@ -339,8 +339,6 @@ The connector **MUST** achieve complete meeting enrichment for at least 95% of n
 - [ ] `p2` - **ID**: `cpt-insightspec-nfr-zoom-operational-resilience`
 
 The connector **MUST** tolerate retried runs, transient API failures, and overlapping recovery windows without producing inconsistent activity counts.
-
-**Threshold**: Recovery or retry runs must preserve record uniqueness and produce no more than 0.5% unexplained variance in aggregate meeting or message counts for the reprocessed window.
 
 **Rationale**: External API variability is expected, but it must not undermine trust in the collected metrics.
 
@@ -368,7 +366,7 @@ None.
 
 **Compatibility**: The connector depends on continued availability of the required Zoom activity surfaces; source-side entitlement or contract changes may reduce completeness until the connector is updated
 
-**Implementation note**: The current declarative connector manifest uses concise stream names `users`, `meetings`, `participants`, and `message_activities`. Message activity is implemented through `GET /chat/users/{zoom_user_id}/messages` as a separate user-scoped message stream. The current manifest requires `insight_tenant_id`, `account_id`, `client_id`, `client_secret`, `start_date`, and optional `page_size`, and it stamps `tenant_id` into every emitted row.
+**Implementation note**: See [DESIGN.md](./DESIGN.md) for connector manifest details including stream names, configuration parameters, and endpoint paths.
 
 ## 8. Use Cases
 
@@ -379,9 +377,8 @@ None.
 **Actor**: `cpt-insightspec-actor-zoom-operator`
 
 **Preconditions**:
-- Zoom connector credentials and required scopes are configured
+- Zoom Server-to-Server OAuth credentials and required scopes are configured for meeting, participant, user, and message activity access
 - A collection run starts for a window containing meetings not yet fully enriched
-- Zoom Server-to-Server OAuth credentials are configured for meeting, participant, user, and message activity access
 
 **Main Flow**:
 1. The connector discovers newly visible Zoom meetings in the collection window
@@ -452,6 +449,8 @@ None.
 - The current manifest stamps `tenant_id` into every emitted row from `insight_tenant_id`
 - Message activity may not always have a reliable direct linkage to a specific meeting and should not be forced into meeting-scoped enrichment when such linkage is absent
 - Source account configuration provides enough participant detail to calculate attendance duration for most eligible meetings
+- The Zoom account is on a Business, Education, or Enterprise plan that provides access to the Dashboard API endpoints required for meeting and participant collection
+- Deactivated Zoom users are excluded from the `users` stream (`status=active`); their historical meeting and participant records remain in Bronze but new message activity will not be collected
 - Historical backfill depth varies by tenant and should be treated as best-effort rather than guaranteed
 - Normalized user identity attributes such as email are available often enough to support downstream identity resolution
 
@@ -461,5 +460,6 @@ None.
 |------|--------|------------|
 | Zoom source limitations reduce participant visibility for some meetings | Attendance duration may be incomplete, weakening trust in collaboration metrics | Track completeness explicitly, record source-side limitations, and surface coverage gaps to operators |
 | API fan-out for meeting enrichment is higher than expected | Large tenants may experience slower collection cycles or operational pressure during peak windows | Prioritize incremental collection, monitor enrichment completeness, and design scheduling around expected discovery volume |
+| Dashboard API rate limits constrain participant collection throughput | The `/metrics/meetings/{uuid}/participants` endpoint is classified as heavy (20 req/sec); fan-out across thousands of meetings per run may cause throttling and extended collection times | Implement back-pressure, respect `Retry-After` headers, and consider batching collection across multiple shorter runs |
 | Message activity coverage differs across Zoom plans or account configurations | Per-user message counts may be incomplete or inconsistent across tenants, and meeting-level linkage may not always be available | Treat message coverage as a source dependency for the separate message flow and expose linkage limitations through connector or platform observability |
 | Historical activity is not fully recoverable during onboarding | Early dashboards may start with partial history and create baseline gaps | Set onboarding expectations that backfill is best-effort and prioritize stable ongoing collection from day one |

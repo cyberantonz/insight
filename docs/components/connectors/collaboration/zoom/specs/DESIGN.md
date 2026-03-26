@@ -456,4 +456,4 @@ There is no implemented source-emitted run log stream.
 | [PRD.md](./PRD.md) | Product intent and scope |
 | [DESIGN.md](./DESIGN.md) | Current implementation-aligned technical design |
 | [zoom.md](../zoom.md) | Standalone connector reference aligned to this design |
-| [`manifest.yaml`](/Users/voltenko/Projects/Work/insight/src/connectors/collaboration/zoom/manifest.yaml) | Source of truth for executable current implementation |
+| [`manifest.yaml`](../../../../../../src/connectors/collaboration/zoom/manifest.yaml) | Source of truth for executable current implementation |
