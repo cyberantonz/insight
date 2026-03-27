@@ -40,6 +40,20 @@ definitions:
       inject_into: request_parameter
       field_name: after_id
 
+  offset_paginator:
+    type: DefaultPaginator
+    pagination_strategy:
+      type: OffsetIncrement
+      page_size: 1000
+    page_token_option:
+      type: RequestOption
+      inject_into: request_parameter
+      field_name: offset
+    page_size_option:
+      type: RequestOption
+      inject_into: request_parameter
+      field_name: limit
+
   next_page_paginator:
     type: DefaultPaginator
     pagination_strategy:
@@ -264,8 +278,6 @@ streams:
           $ref: "#/definitions/anthropic_headers"
         authenticator:
           $ref: "#/definitions/api_key_authenticator"
-        request_parameters:
-          limit: "100"
       record_selector:
         type: RecordSelector
         extractor:
@@ -273,7 +285,7 @@ streams:
           field_path:
             - data
       paginator:
-        type: NoPagination
+        $ref: "#/definitions/offset_paginator"
     transformations:
       - $ref: "#/definitions/tenant_id_injection"
       - type: AddFields
@@ -428,8 +440,6 @@ streams:
           $ref: "#/definitions/anthropic_headers"
         authenticator:
           $ref: "#/definitions/api_key_authenticator"
-        request_parameters:
-          limit: "100"
       record_selector:
         type: RecordSelector
         extractor:
@@ -437,7 +447,7 @@ streams:
           field_path:
             - data
       paginator:
-        type: NoPagination
+        $ref: "#/definitions/offset_paginator"
     transformations:
       - $ref: "#/definitions/tenant_id_injection"
 

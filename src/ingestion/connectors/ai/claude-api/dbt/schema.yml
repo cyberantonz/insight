@@ -28,6 +28,7 @@ models:
         description: "Composite dedup key: date|model|api_key_id|workspace_id|service_tier|context_window|inference_geo|speed"
         tests:
           - not_null
+          - unique
       - name: report_date
         description: "Usage date (ISO 8601)"
         tests:
@@ -58,6 +59,8 @@ models:
         description: "Tokens written to 5-minute prompt cache"
       - name: cache_creation_1h_tokens
         description: "Tokens written to 1-hour prompt cache"
+      - name: cache_creation_tokens
+        description: "Derived: cache_creation_5m_tokens + cache_creation_1h_tokens (aggregated per DESIGN §4.5)"
       - name: output_tokens
         description: "Output tokens generated"
       - name: total_input_tokens
@@ -78,3 +81,5 @@ models:
               values: ['insight_claude_api']
       - name: collected_at
         description: "When the record was collected"
+        tests:
+          - not_null

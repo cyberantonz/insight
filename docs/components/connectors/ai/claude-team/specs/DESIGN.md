@@ -305,7 +305,7 @@ check:
   stream_names: [claude_team_users]
 
 definitions:
-  bearer_authenticator:
+  api_key_authenticator:
     type: ApiKeyAuthenticator
     api_token: "{{ config['admin_api_key'] }}"
     header: x-api-key
@@ -331,7 +331,7 @@ streams:
         path: /v1/organizations/users
         http_method: GET
         authenticator:
-          $ref: "#/definitions/bearer_authenticator"
+          $ref: "#/definitions/api_key_authenticator"
         request_headers:
           anthropic-version: "2023-06-01"
         request_parameters:
@@ -627,7 +627,7 @@ One row per user. Current-state only -- no versioning.
 | `input_tokens` | Float64 | Input tokens consumed |
 | `output_tokens` | Float64 | Output tokens generated |
 | `cache_read_tokens` | Float64 | Tokens served from prompt cache |
-| `cache_write_tokens` | Float64 | Tokens written to prompt cache |
+| `cache_creation_tokens` | Float64 | Tokens written to prompt cache |
 | `tool_use_count` | Float64 | Tool/function calls made (agent-style usage signal) |
 | `session_count` | Float64 | Number of distinct Claude Code sessions |
 | `collected_at` | DateTime | Collection timestamp |
@@ -773,7 +773,7 @@ The Identity Manager resolves `email`/`actor_identifier` -> canonical `person_id
 | `input_tokens` | `input_tokens` | Input tokens consumed |
 | `output_tokens` | `output_tokens` | Output tokens generated |
 | `cache_read_tokens` | `cache_read_tokens` | Tokens from prompt cache |
-| `cache_write_tokens` | `cache_write_tokens` | Tokens written to cache |
+| `cache_creation_tokens` | `cache_creation_tokens` | Tokens written to cache |
 | `tool_use_count` | `tool_use_count` | Tool/function calls -- Claude Code signal |
 | `session_count` | `session_count` | Distinct sessions |
 | `terminal_type` | `terminal_type` | Client terminal type |
@@ -807,14 +807,14 @@ Only the code usage stream uses incremental sync:
 | Stream | Sync mode | Cursor field | Cursor format | Start (first run) | End |
 |--------|-----------|-------------|---------------|-------------------|-----|
 | `claude_team_users` | Full refresh | N/A | N/A | N/A | N/A |
-| `claude_team_code_usage` | Incremental | `date` | ISO 8601 | Probe backward, stop after 6 empty days | now |
+| `claude_team_code_usage` | Incremental | `date` | ISO 8601 | Configurable `start_date` (default: 90 days ago) | now |
 | `claude_team_workspaces` | Full refresh | N/A | N/A | N/A | N/A |
 | `claude_team_workspace_members` | Full refresh | N/A | N/A | N/A | N/A |
 | `claude_team_invites` | Full refresh | N/A | N/A | N/A | N/A |
 
-On first run (empty state), the code usage stream probes backward day-by-day. After 6 consecutive days with zero records, it assumes no earlier data exists and fetches forward from the earliest non-empty day to now. On subsequent runs, the cursor starts from the last stored `date` position.
+**Manifest implementation**: The declarative manifest uses a fixed `start_datetime` (configurable `start_date`, default 90 days ago) with `step: P1D`. Adaptive backfill (probing backward and stopping after 6 consecutive empty days) is not supported by the Airbyte declarative framework and would require a custom CDK connector or orchestrator-level logic. The fixed lookback window is sufficient for most deployments; organizations needing deeper backfill can override `start_date` in the connection configuration. On subsequent runs, the cursor starts from the last stored `date` position.
 
-**Backfill probe**: Unlike Cursor's zero-activity rows (which return data for all team members even on empty days), the Anthropic code usage endpoint returns empty results for days with no activity. This makes the probe simpler -- an empty response genuinely means no data.
+**Note**: Unlike Cursor's zero-activity rows (which return data for all team members even on empty days), the Anthropic code usage endpoint returns empty results for days with no activity.
 
 ### Capacity Estimates
 
@@ -841,7 +841,7 @@ A full daily sync for a 200-person team with 10 workspaces takes approximately 1
 - Claude Code has `tool_use_count`, `session_count` -- Cursor/Windsurf do not have exact equivalents (Cursor has `agentRequests`, Windsurf has its own metrics).
 - Should `class_ai_dev_usage` use nullable columns for tool-specific metrics, or separate tables per tool category?
 
-**OQ-CT-4: Backfill depth** -- The connector stops probing backward after 6 consecutive empty days. Is this sufficient for all deployment scenarios? Organizations that enable the Admin API months after initial usage may need deeper backfill.
+**OQ-CT-4: Backfill depth** -- The connector uses a fixed lookback window (configurable `start_date`, default 90 days). Organizations that enable the Admin API months after initial usage may need a deeper `start_date` override. Adaptive backfill (probing backward until N empty days) is not supported by the Airbyte declarative framework and would require CDK or orchestrator-level logic.
 
 ### Non-Applicable Domains
 

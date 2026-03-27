@@ -233,9 +233,9 @@ The connector **MUST** extract daily Claude Code usage records from the `GET /v1
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-claude-team-code-usage-incremental`
 
-The connector **MUST** support incremental sync for code usage using a date-based cursor (`date` field). On each run, only new days since the last cursor position are fetched. On backfill, the connector fetches day-by-day and stops after 6 consecutive empty days.
+The connector **MUST** support incremental sync for code usage using a date-based cursor (`date` field). On each run, only new days since the last cursor position are fetched. On first run, the connector fetches from a configurable `start_date` (default: 90 days ago) forward to today.
 
-**Rationale**: Incremental sync avoids re-fetching the entire usage history on each run. The 6-empty-days stop condition prevents unbounded backfill probing.
+**Rationale**: Incremental sync avoids re-fetching the entire usage history on each run. The fixed lookback window is configurable via `start_date` for organizations needing deeper history. Adaptive backfill (probing backward until N empty days) is not supported by the Airbyte declarative framework.
 
 **Actors**: `cpt-insightspec-actor-claude-team-operator`
 
@@ -452,7 +452,7 @@ Bronze table schemas **MUST** remain stable across connector versions. Breaking 
 
 **Alternative Flows**:
 
-- **First run (code usage)**: Connector fetches day-by-day backward until 6 consecutive empty days, then fetches forward to now
+- **First run (code usage)**: Connector fetches from configurable `start_date` (default: 90 days ago) forward to today
 - **API throttling (HTTP 429)**: Connector retries with exponential backoff
 - **Empty date range**: No new data to fetch; sync completes with zero records
 - **Workspace iteration**: If workspace list is empty, workspace members stream emits zero records

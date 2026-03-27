@@ -661,10 +661,10 @@ The mapping from `created_by` fields and invite emails to `person_id` is handled
 - Small dataset sizes make full refresh efficient
 - Upsert semantics prevent duplicates
 
-**Date windowing example** for a 90-day lookback:
-1. Window 1: `starting_at=2026-01-01`, `ending_at=2026-01-31`
-2. Window 2: `starting_at=2026-02-01`, `ending_at=2026-03-03`
-3. Window 3: `starting_at=2026-03-04`, `ending_at=2026-03-25`
+**Date windowing example** (P31D step, `ending_at` inclusive):
+1. Window 1: `starting_at=2026-01-01`, `ending_at=2026-01-31` (31 days)
+2. Window 2: `starting_at=2026-02-01`, `ending_at=2026-03-03` (31 days)
+3. Window 3: `starting_at=2026-03-04`, `ending_at=2026-03-27` (remainder to today)
 
 ### 4.4 Capacity Estimates
 
