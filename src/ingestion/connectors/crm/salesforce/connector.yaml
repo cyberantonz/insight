@@ -125,6 +125,8 @@ definitions:
             value: "salesforce"
           - path: [collected_at]
             value: "{{ now_utc().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          - path: [raw_data]
+            value: "{{ record }}"
     schema_loader:
       type: InlineSchemaLoader
       schema:
@@ -180,6 +182,9 @@ definitions:
           collected_at:
             type: string
             format: date-time
+          raw_data:
+            type: object
+            additionalProperties: true
 
   contacts_stream:
     type: DeclarativeStream
@@ -216,6 +221,8 @@ definitions:
             value: "salesforce"
           - path: [collected_at]
             value: "{{ now_utc().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          - path: [raw_data]
+            value: "{{ record }}"
     schema_loader:
       type: InlineSchemaLoader
       schema:
@@ -265,6 +272,9 @@ definitions:
           collected_at:
             type: string
             format: date-time
+          raw_data:
+            type: object
+            additionalProperties: true
 
   opportunities_stream:
     type: DeclarativeStream
@@ -303,6 +313,8 @@ definitions:
             value: "salesforce"
           - path: [collected_at]
             value: "{{ now_utc().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          - path: [raw_data]
+            value: "{{ record }}"
     schema_loader:
       type: InlineSchemaLoader
       schema:
@@ -363,6 +375,9 @@ definitions:
           collected_at:
             type: string
             format: date-time
+          raw_data:
+            type: object
+            additionalProperties: true
 
   opportunity_history_stream:
     type: DeclarativeStream
