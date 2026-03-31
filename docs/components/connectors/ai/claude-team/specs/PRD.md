@@ -156,7 +156,7 @@ Resolves `email` from Claude Team Bronze tables to canonical `person_id` in Silv
 - Authentication uses `x-api-key` header with `anthropic-version: 2023-06-01` required on all requests
 - The connector **SHOULD** run daily -- all streams are daily or current-state snapshots
 - The Anthropic Admin API enforces rate limits; the connector must add a 1-second delay between paginated pages for users and between workspace iterations for workspace members
-- Code usage data uses ISO 8601 date parameters (`starting_at`, `ending_at`) with `bucket_width=1d`
+- Code usage data uses a date-only parameter `starting_at` (format `YYYY-MM-DD`); the `claude_code` endpoint does not accept `ending_at` or `bucket_width`
 - Workspace members requires iterating over all workspaces first (SubstreamPartitionRouter pattern)
 
 ## 4. Scope
@@ -385,7 +385,7 @@ Bronze table schemas **MUST** remain stable across connector versions. Breaking 
 | Stream | Endpoint | Method |
 |--------|----------|--------|
 | `claude_team_users` | `GET /v1/organizations/users?limit=100&after_id={cursor}` | Full refresh |
-| `claude_team_code_usage` | `GET /v1/organizations/usage_report/claude_code?starting_at=ISO&ending_at=ISO&bucket_width=1d` | Incremental |
+| `claude_team_code_usage` | `GET /v1/organizations/usage_report/claude_code?starting_at=YYYY-MM-DD` | Incremental |
 | `claude_team_workspaces` | `GET /v1/organizations/workspaces?limit={n}` | Full refresh |
 | `claude_team_workspace_members` | `GET /v1/organizations/workspaces/{id}/members` | Full refresh (iterates workspaces) |
 | `claude_team_invites` | `GET /v1/organizations/invites?limit={n}` | Full refresh |

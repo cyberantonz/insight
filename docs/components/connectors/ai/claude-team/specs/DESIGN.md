@@ -152,7 +152,7 @@ Workspace members requires iterating over all workspaces from the `claude_team_w
 
 - [ ] `p2` - **ID**: `cpt-insightspec-constraint-claude-team-iso-dates`
 
-The code usage endpoint uses ISO 8601 datetime parameters (`starting_at`, `ending_at`) with `bucket_width=1d`. This differs from Cursor's epoch millisecond format. The manifest's `DatetimeBasedCursor` must use ISO format strings.
+The code usage endpoint uses a date-only parameter `starting_at` (format `YYYY-MM-DD`). Unlike the `messages` and `cost_report` endpoints, `claude_code` does **not** accept `ending_at` or `bucket_width` parameters — only `starting_at` is permitted. The connector sends one request per day with `starting_at=YYYY-MM-DD` and the API returns all usage for that date. The manifest's `DatetimeBasedCursor` uses `datetime_format: "%Y-%m-%d"` and does not inject `end_time_option`.
 
 ## 3. Technical Architecture
 
@@ -408,7 +408,7 @@ Ensures every record emitted by all streams contains `tenant_id` from the connec
 | Stream | Endpoint | Method | Pagination | Date Params |
 |--------|----------|--------|------------|-------------|
 | `claude_team_users` | `GET /v1/organizations/users` | GET | Cursor: `after_id`, `limit=100` | None |
-| `claude_team_code_usage` | `GET /v1/organizations/usage_report/claude_code` | GET | Cursor-based | Query: `starting_at` (ISO), `ending_at` (ISO), `bucket_width=1d` |
+| `claude_team_code_usage` | `GET /v1/organizations/usage_report/claude_code` | GET | Cursor-based | Query: `starting_at` (YYYY-MM-DD only; no `ending_at` or `bucket_width`) |
 | `claude_team_workspaces` | `GET /v1/organizations/workspaces` | GET | `limit` param | None |
 | `claude_team_workspace_members` | `GET /v1/organizations/workspaces/{id}/members` | GET | `limit` param | None |
 | `claude_team_invites` | `GET /v1/organizations/invites` | GET | `limit` param | None |
@@ -542,7 +542,7 @@ sequenceDiagram
 
     Note over Src,AApi: Stream 2: claude_team_code_usage (incremental)
     loop For each day (cursor -> now)
-        Src->>AApi: GET /v1/organizations/usage_report/claude_code?starting_at=ISO&ending_at=ISO&bucket_width=1d
+        Src->>AApi: GET /v1/organizations/usage_report/claude_code?starting_at=YYYY-MM-DD
         AApi-->>Src: {data: [...]}
     end
     Src-->>Dest: RECORD messages
@@ -630,12 +630,15 @@ One row per user. Current-state only -- no versioning.
 | `cache_creation_tokens` | Float64 | Tokens written to prompt cache |
 | `tool_use_count` | Float64 | Tool/function calls made (agent-style usage signal) |
 | `session_count` | Float64 | Number of distinct Claude Code sessions |
+| `lines_generated` | Float64 | Lines of code added by Claude Code |
 | `collected_at` | DateTime | Collection timestamp |
 | `data_source` | String | Always `insight_claude_team` |
 | `_version` | Int | Deduplication version |
 | `metadata` | String (JSON) | Full API response |
 
 One row per `(date, actor_type, actor_identifier, terminal_type)`. Incremental sync by `date`.
+
+**Note**: The API returns actor data as a nested object `actor: {type, email|api_key_name}`. The connector flattens this via `AddFields` transformations: `actor_type = actor.type`, `actor_identifier = actor.api_key_name || actor.email`. The API also returns `core_metrics` (sessions, lines_of_code, commits, PRs), `tool_actions` (per-tool accepted/rejected counts), and `model_breakdown[]` (per-model token usage with estimated cost) as nested objects. These are available in the raw record but are not individually mapped to Bronze columns in v1 — they can be accessed via the raw JSON if needed.
 
 **Note**: No `cost_cents` field -- under a Team subscription the per-token cost is not meaningful; the cost is the seat fee.
 

@@ -466,7 +466,14 @@ sequenceDiagram
 | `date` | String | Cost date (ISO 8601 date) |
 | `workspace_id` | String | Workspace identifier |
 | `description` | String | Cost category description |
-| `amount_cents` | Number | Cost amount in cents |
+| `amount` | String | Cost amount in USD (string representation) |
+| `currency` | String (nullable) | Currency code (e.g., `USD`) |
+| `cost_type` | String (nullable) | Cost category type (e.g., `tokens`, `web_search`) |
+| `model` | String (nullable) | Model associated with the cost line |
+| `service_tier` | String (nullable) | Service tier |
+| `context_window` | String (nullable) | Context window size |
+| `token_type` | String (nullable) | Token type (e.g., `uncached_input_tokens`, `output_tokens`, `cache_read_input_tokens`) |
+| `inference_geo` | String (nullable) | Inference geography |
 | `collected_at` | String | Collection timestamp (ISO 8601) |
 | `data_source` | String | Always `insight_claude_api` |
 | `_version` | String | Deduplication version |
@@ -652,7 +659,7 @@ The mapping from `created_by` fields and invite emails to `person_id` is handled
 **Usage and cost streams**:
 - Cursor field: `date`
 - Cursor granularity: daily (ISO 8601 date)
-- Step size: `P1D` (31-day windows, API maximum)
+- Step size: `P1D` (one day per request — see ADR-002 for nested response extraction)
 - Lookback: configurable `start_date` for first run; subsequent runs start from last cursor + 1 day
 - No billing period boundary issues: Anthropic API data is finalized daily
 
