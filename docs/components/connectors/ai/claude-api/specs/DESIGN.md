@@ -171,7 +171,7 @@ The connector targets the Anthropic Admin API at `https://api.anthropic.com`. It
 
 - [ ] `p1` - **ID**: `cpt-insightspec-constraint-claude-api-date-range`
 
-The usage and cost report endpoints enforce a maximum date range of 31 days per request. The `DatetimeBasedCursor` `step` parameter is set to `P31D` to respect this constraint.
+The usage and cost report endpoints enforce a maximum date range of 31 days per request. The `DatetimeBasedCursor` `step` parameter is set to `P1D` (one day per request). This is required because the API returns a nested response structure (`data[].results[]`) where each `data` element is a date bucket containing a `results` array of individual usage records. The `DpathExtractor` uses `field_path: [data, "0", results]` to extract individual records from the single bucket returned per P1D request. The `date` field is injected from `stream_interval['start_time']` since individual result records do not contain a date field. API field names are mapped via `AddFields` transformations: `cache_read_input_tokens` → `cache_read_tokens`, `cache_creation.ephemeral_5m_input_tokens` → `cache_creation_5m_tokens`, `cache_creation.ephemeral_1h_input_tokens` → `cache_creation_1h_tokens`, `server_tool_use.web_search_requests` → `web_search_requests`.
 
 #### No Per-Request Granularity
 
@@ -237,7 +237,7 @@ Single YAML file that defines all streams, authentication, pagination strategies
 - Declares 5 data streams: `claude_api_messages_usage`, `claude_api_cost_report`, `claude_api_keys`, `claude_api_workspaces`, `claude_api_invites`.
 - Defines `ApiKeyAuthenticator` with `header: x-api-key` for authentication.
 - Defines `request_headers` with `anthropic-version: 2023-06-01` on each requester.
-- Implements `DatetimeBasedCursor` for incremental streams (usage, cost) with `P31D` step.
+- Implements `DatetimeBasedCursor` for incremental streams (usage, cost) with `P1D` step.
 - Implements `CursorPagination` for usage/cost streams using `next_page` token.
 - Implements `OffsetIncrement` pagination for keys/workspaces/invites.
 - Implements `AddFields` transformations for framework fields and composite unique keys.
@@ -652,7 +652,7 @@ The mapping from `created_by` fields and invite emails to `person_id` is handled
 **Usage and cost streams**:
 - Cursor field: `date`
 - Cursor granularity: daily (ISO 8601 date)
-- Step size: `P31D` (31-day windows, API maximum)
+- Step size: `P1D` (31-day windows, API maximum)
 - Lookback: configurable `start_date` for first run; subsequent runs start from last cursor + 1 day
 - No billing period boundary issues: Anthropic API data is finalized daily
 
@@ -661,7 +661,7 @@ The mapping from `created_by` fields and invite emails to `person_id` is handled
 - Small dataset sizes make full refresh efficient
 - Upsert semantics prevent duplicates
 
-**Date windowing example** (P31D step, `ending_at` inclusive):
+**Date windowing example** (P1D step, `ending_at` inclusive):
 1. Window 1: `starting_at=2026-01-01`, `ending_at=2026-01-31` (31 days)
 2. Window 2: `starting_at=2026-02-01`, `ending_at=2026-03-03` (31 days)
 3. Window 3: `starting_at=2026-03-04`, `ending_at=2026-03-27` (remainder to today)
@@ -725,6 +725,7 @@ The mapping from `created_by` fields and invite emails to `person_id` is handled
 | ADR | Title | Status |
 |-----|-------|--------|
 | [ADR-001](./ADR/ADR-001-group-by-limit-inference-geo.md) | Drop `inference_geo` from `group_by` dimensions (API max-5 limit) | Accepted |
+| [ADR-002](./ADR/ADR-002-api-response-structure.md) | API response structure — nested records, field mapping, cost_report schema expansion | Accepted |
 
 ---
 

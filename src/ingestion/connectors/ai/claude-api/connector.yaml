@@ -137,15 +137,26 @@ streams:
           type: DpathExtractor
           field_path:
             - data
+            - "0"
+            - results
       paginator:
         $ref: "#/definitions/cursor_paginator"
     transformations:
       - $ref: "#/definitions/tenant_id_injection"
       - type: AddFields
         fields:
-          - path:
-              - unique
-            value: "{{ record.get('date', '') }}|{{ record.get('model', '') }}|{{ record.get('api_key_id', '') }}|{{ record.get('workspace_id', '') }}|{{ record.get('service_tier', '') }}|{{ record.get('context_window', '') }}"
+          - path: [date]
+            value: "{{ stream_interval['start_time'][:10] }}"
+          - path: [cache_read_tokens]
+            value: "{{ record.get('cache_read_input_tokens', 0) }}"
+          - path: [cache_creation_5m_tokens]
+            value: "{{ record.get('cache_creation', {}).get('ephemeral_5m_input_tokens', 0) }}"
+          - path: [cache_creation_1h_tokens]
+            value: "{{ record.get('cache_creation', {}).get('ephemeral_1h_input_tokens', 0) }}"
+          - path: [web_search_requests]
+            value: "{{ record.get('server_tool_use', {}).get('web_search_requests', 0) }}"
+          - path: [unique]
+            value: "{{ stream_interval['start_time'][:10] }}|{{ record.get('model') or '' }}|{{ record.get('api_key_id') or '' }}|{{ record.get('workspace_id') or '' }}|{{ record.get('service_tier') or '' }}|{{ record.get('context_window') or '' }}"
     incremental_sync:
       type: DatetimeBasedCursor
       cursor_field: date
@@ -157,7 +168,7 @@ streams:
         type: MinMaxDatetime
         datetime: "{{ config.get('start_date', day_delta(-90, format='%Y-%m-%dT00:00:00Z')) }}"
         datetime_format: "%Y-%m-%dT%H:%M:%SZ"
-      step: P31D
+      step: P1D
       cursor_granularity: P1D
       start_time_option:
         type: RequestOption
@@ -195,8 +206,38 @@ streams:
             type:
               - string
               - "null"
-          amount_cents:
-            type: number
+          amount:
+            type:
+              - string
+              - "null"
+          currency:
+            type:
+              - string
+              - "null"
+          cost_type:
+            type:
+              - string
+              - "null"
+          model:
+            type:
+              - string
+              - "null"
+          service_tier:
+            type:
+              - string
+              - "null"
+          context_window:
+            type:
+              - string
+              - "null"
+          token_type:
+            type:
+              - string
+              - "null"
+          inference_geo:
+            type:
+              - string
+              - "null"
           collected_at:
             type: string
           data_source:
@@ -220,15 +261,18 @@ streams:
           type: DpathExtractor
           field_path:
             - data
+            - "0"
+            - results
       paginator:
         $ref: "#/definitions/cursor_paginator"
     transformations:
       - $ref: "#/definitions/tenant_id_injection"
       - type: AddFields
         fields:
-          - path:
-              - unique
-            value: "{{ record.get('date', '') }}|{{ record.get('workspace_id', '') }}|{{ record.get('description', '') }}"
+          - path: [date]
+            value: "{{ stream_interval['start_time'][:10] }}"
+          - path: [unique]
+            value: "{{ stream_interval['start_time'][:10] }}|{{ record.get('workspace_id') or '' }}|{{ record.get('description') or '' }}"
     incremental_sync:
       type: DatetimeBasedCursor
       cursor_field: date
@@ -240,7 +284,7 @@ streams:
         type: MinMaxDatetime
         datetime: "{{ config.get('start_date', day_delta(-90, format='%Y-%m-%dT00:00:00Z')) }}"
         datetime_format: "%Y-%m-%dT%H:%M:%SZ"
-      step: P31D
+      step: P1D
       cursor_granularity: P1D
       start_time_option:
         type: RequestOption

@@ -189,8 +189,6 @@ streams:
           $ref: "#/definitions/anthropic_headers"
         authenticator:
           $ref: "#/definitions/api_key_authenticator"
-        request_parameters:
-          bucket_width: "1d"
       record_selector:
         type: RecordSelector
         extractor:
@@ -203,29 +201,29 @@ streams:
       - $ref: "#/definitions/tenant_id_injection"
       - type: AddFields
         fields:
-          - path:
-              - unique
-            value: "{{ record.get('date', '') }}|{{ record.get('actor_type', '') }}|{{ record.get('actor_identifier', '') }}|{{ record.get('terminal_type', '') }}"
+          - path: [date]
+            value: "{{ record.get('date', '')[:10] }}"
+          - path: [actor_type]
+            value: "{{ record.get('actor', {}).get('type') or '' }}"
+          - path: [actor_identifier]
+            value: "{{ record.get('actor', {}).get('api_key_name') or record.get('actor', {}).get('email') or '' }}"
+          - path: [unique]
+            value: "{{ record.get('date', '')[:10] }}|{{ record.get('actor', {}).get('type') or '' }}|{{ record.get('actor', {}).get('api_key_name') or record.get('actor', {}).get('email') or '' }}|{{ record.get('terminal_type') or '' }}"
     incremental_sync:
       type: DatetimeBasedCursor
       cursor_field: date
       cursor_datetime_formats:
-        - "%Y-%m-%dT%H:%M:%SZ"
         - "%Y-%m-%d"
-      datetime_format: "%Y-%m-%dT%H:%M:%SZ"
+        - "%Y-%m-%dT%H:%M:%SZ"
+      datetime_format: "%Y-%m-%d"
       start_datetime:
         type: MinMaxDatetime
-        datetime: "{{ config.get('start_date', day_delta(-90, format='%Y-%m-%dT00:00:00Z')) }}"
-        datetime_format: "%Y-%m-%dT%H:%M:%SZ"
+        datetime: "{{ config.get('start_date', day_delta(-90, format='%Y-%m-%d')) }}"
+        datetime_format: "%Y-%m-%d"
       step: P1D
-      cursor_granularity: P1D
       start_time_option:
         type: RequestOption
         field_name: starting_at
-        inject_into: request_parameter
-      end_time_option:
-        type: RequestOption
-        field_name: ending_at
         inject_into: request_parameter
 
   # ── Stream 3: claude_team_workspaces (full refresh) ──

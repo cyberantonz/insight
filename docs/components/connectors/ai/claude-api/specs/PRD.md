@@ -218,7 +218,7 @@ The connector **MUST** follow cursor-based pagination using the `next_page` toke
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-claude-api-cost-report`
 
-The connector **MUST** collect daily cost reports from `/v1/organizations/cost_report`, capturing `date`, `workspace_id`, `description`, and `amount_cents` at one row per `(date, workspace_id, description)`.
+The connector **MUST** collect daily cost reports from `/v1/organizations/cost_report`, capturing `date`, `workspace_id`, `description`, `amount`, `currency`, and additional dimension fields (`cost_type`, `model`, `service_tier`, `context_window`, `token_type`, `inference_geo`) at one row per `(date, workspace_id, description)`. Note: the API returns `amount` (string, USD) not `amount_cents` (integer) — see [ADR-002](./ADR/ADR-002-api-response-structure.md).
 
 **Rationale**: Cost reports provide financial attribution by workspace and cost category, complementing the token-level usage data.
 **Actors**: `cpt-insightspec-actor-claude-api-analytics-eng`, `cpt-insightspec-actor-claude-api-manager`
