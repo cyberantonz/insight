@@ -85,7 +85,7 @@ impl Client {
     /// tenant ID. All subsequent filters are appended with `AND`.
     #[must_use]
     pub fn tenant_query(&self, table: &str, tenant_id: uuid::Uuid) -> QueryBuilder {
-        QueryBuilder::new(self.clone(), table, tenant_id, self.config.query_timeout)
+        QueryBuilder::new(self.clone(), table, tenant_id)
     }
 
     /// Returns the underlying `clickhouse` crate client for advanced usage.

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 /// `ClickHouse` connection configuration.
 ///
-/// All fields are plain values — no secrets in debug output.
-#[derive(Clone, Debug)]
+/// `Debug` impl redacts the password field.
+#[derive(Clone)]
 pub struct Config {
     /// `ClickHouse` HTTP URL (e.g., `http://localhost:8123`).
     pub url: String,
@@ -18,6 +18,18 @@ pub struct Config {
     /// Per-query timeout. Applied as `max_execution_time` setting.
     /// `None` means no timeout (`ClickHouse` server default).
     pub query_timeout: Option<Duration>,
+}
+
+impl core::fmt::Debug for Config {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Config")
+            .field("url", &self.url)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("query_timeout", &self.query_timeout)
+            .finish()
+    }
 }
 
 impl Config {

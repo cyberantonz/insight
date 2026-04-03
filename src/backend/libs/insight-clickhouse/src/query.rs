@@ -3,8 +3,6 @@
 //! All values are passed via bind parameters — no string interpolation.
 //! The builder always starts with `WHERE tenant_id = ?` to enforce tenant isolation.
 
-use std::time::Duration;
-
 use clickhouse::Row;
 use uuid::Uuid;
 
@@ -20,8 +18,8 @@ use crate::{Client, Error};
 /// ```rust,ignore
 /// let rows: Vec<Metric> = client
 ///     .tenant_query("gold.pr_cycle_time", tenant_id)
-///     .filter("org_unit_id = ?", org_unit_id)
-///     .filter("metric_date >= ?", start_date)
+///     .filter_uuid("org_unit_id = ?", org_unit_id)
+///     .filter_str("metric_date >= ?", "2026-01-01")
 ///     .order_by("metric_date DESC")
 ///     .limit(100)
 ///     .fetch_all()
@@ -37,7 +35,6 @@ pub struct QueryBuilder {
     limit: Option<u64>,
     offset: Option<u64>,
     select: Option<String>,
-    query_timeout: Option<Duration>,
 }
 
 /// Internal enum for bind values.
@@ -51,12 +48,7 @@ enum BindValue {
 }
 
 impl QueryBuilder {
-    pub(crate) fn new(
-        client: Client,
-        table: &str,
-        tenant_id: Uuid,
-        query_timeout: Option<Duration>,
-    ) -> Self {
+    pub(crate) fn new(client: Client, table: &str, tenant_id: Uuid) -> Self {
         Self {
             client,
             table: table.to_owned(),
@@ -67,40 +59,40 @@ impl QueryBuilder {
             limit: None,
             offset: None,
             select: None,
-            query_timeout,
         }
     }
 
-    /// Adds a filter condition. The condition **must** use `?` for values.
+    /// Adds a UUID filter condition. The condition **must** use `?` for values.
     ///
-    /// Appended as `AND {condition}` after the automatic `tenant_id` filter.
+    /// Appended as `AND ({condition})` after the automatic `tenant_id` filter.
+    /// Parentheses prevent SQL precedence from bypassing tenant isolation.
     #[must_use]
     pub fn filter_uuid(mut self, condition: &str, value: Uuid) -> Self {
-        self.filters.push(condition.to_owned());
+        self.filters.push(format!("({condition})"));
         self.bind_values.push(BindValue::Uuid(value));
         self
     }
 
-    /// Adds a string filter condition.
+    /// Adds a string filter condition. Wrapped in parentheses for safety.
     #[must_use]
     pub fn filter_str(mut self, condition: &str, value: impl Into<String>) -> Self {
-        self.filters.push(condition.to_owned());
+        self.filters.push(format!("({condition})"));
         self.bind_values.push(BindValue::String(value.into()));
         self
     }
 
-    /// Adds an integer filter condition.
+    /// Adds an integer filter condition. Wrapped in parentheses for safety.
     #[must_use]
     pub fn filter_i64(mut self, condition: &str, value: i64) -> Self {
-        self.filters.push(condition.to_owned());
+        self.filters.push(format!("({condition})"));
         self.bind_values.push(BindValue::I64(value));
         self
     }
 
-    /// Adds a float filter condition.
+    /// Adds a float filter condition. Wrapped in parentheses for safety.
     #[must_use]
     pub fn filter_f64(mut self, condition: &str, value: f64) -> Self {
-        self.filters.push(condition.to_owned());
+        self.filters.push(format!("({condition})"));
         self.bind_values.push(BindValue::F64(value));
         self
     }
@@ -173,11 +165,7 @@ impl QueryBuilder {
         let sql = self.to_sql();
         tracing::debug!(sql = %sql, "executing tenant-scoped query");
 
-        let mut query = self.client.inner().query(&sql);
-
-        if let Some(timeout) = self.query_timeout {
-            query = query.with_option("max_execution_time", timeout.as_secs().to_string());
-        }
+        let mut query = self.client.query(&sql);
 
         // Bind tenant_id first (always the first `?`)
         query = query.bind(self.tenant_id);
@@ -245,7 +233,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT * FROM silver.class_commits WHERE tenant_id = ? AND org_unit_id = ?"
+            "SELECT * FROM silver.class_commits WHERE tenant_id = ? AND (org_unit_id = ?)"
         );
     }
 
@@ -264,7 +252,7 @@ mod tests {
         assert_eq!(
             sql,
             "SELECT * FROM gold.pr_cycle_time WHERE tenant_id = ? \
-             AND org_unit_id = ? AND metric_date >= ? AND metric_date < ?"
+             AND (org_unit_id = ?) AND (metric_date >= ?) AND (metric_date < ?)"
         );
     }
 
@@ -315,7 +303,7 @@ mod tests {
             sql,
             "SELECT person_id, avg_hours, metric_date \
              FROM gold.pr_cycle_time WHERE tenant_id = ? \
-             AND org_unit_id = ? AND metric_date >= ? AND avg_hours > ? \
+             AND (org_unit_id = ?) AND (metric_date >= ?) AND (avg_hours > ?) \
              ORDER BY avg_hours DESC LIMIT 100 OFFSET 0"
         );
     }
@@ -341,7 +329,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT * FROM gold.metrics WHERE tenant_id = ? AND value > ?"
+            "SELECT * FROM gold.metrics WHERE tenant_id = ? AND (value > ?)"
         );
     }
 
