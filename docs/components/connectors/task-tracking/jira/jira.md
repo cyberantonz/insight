@@ -51,6 +51,16 @@ Standalone specification for the Jira (Task Tracking) connector.
 
 ---
 
+> **Phase 1 Implementation Notes**
+>
+> - The `updated` cursor field uses `%Y-%m-%d` format (date-only) for JQL compatibility. Jira JQL only accepts `yyyy-MM-dd` or `yyyy-MM-dd HH:mm` format. Full ISO timestamps from the Jira API (e.g. `2026-04-04T11:38:37.225+0300`) are truncated to date for cursor storage and JQL query generation.
+> - `jira_issue_history`: the `issue_jira_id` field is NOT available at Bronze level due to the `SubstreamPartitionRouter` limitation (no `extra_fields` support). Must be resolved via JOIN with `jira_issue` on `id_readable` in Silver/dbt.
+> - `jira_sprints`: `board_name` and `project_key` are NOT available at Bronze level due to the `SubstreamPartitionRouter` limitation. Must be resolved via JOIN with board/project reference data in Silver/dbt.
+> - `jira_issue_ext` and `jira_issue_links` Bronze tables are not populated by the connector in Phase 1. Data stored as JSON columns on `jira_issue` (`custom_fields_json` and `issue_links_json`); denormalization to separate EAV/link tables deferred to Silver/dbt.
+> - Manifest version: `6.60.9`. Start datetime should be configured per customer data range (e.g. `2026-01-01`).
+
+---
+
 ## Bronze Tables
 
 ### `jira_issue` — Issue identifiers and core fields
