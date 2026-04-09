@@ -1,3 +1,4 @@
+-- depends_on: {{ ref('github__repositories') }}
 {{ config(
     materialized='incremental',
     unique_key='unique_key',

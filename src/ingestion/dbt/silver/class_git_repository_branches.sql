@@ -1,3 +1,4 @@
+-- depends_on: {{ ref('github__repository_branches') }}
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
