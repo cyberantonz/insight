@@ -1,12 +1,19 @@
 -- ============================================================
--- Manual SQL for testing in ClickHouse Play UI
+-- ⚠ AD-HOC TESTING ONLY — NOT KEPT IN SYNC WITH DBT MODELS ⚠
+-- ============================================================
+-- Manual SQL for testing in ClickHouse Play UI.
+-- These are point-in-time snapshots of the dbt model logic.
+-- Canonical source of truth: src/ingestion/dbt/identity/seed_*.sql
+-- If dbt models change, these files may produce different results.
+--
 -- http://localhost:30123/play  (user: default, password: clickhouse_local)
 -- http://localhost:8123/play
 --
 -- Run each statement separately (copy one block at a time).
--- These are the raw SQL equivalents of the dbt models:
+-- Raw SQL equivalents of dbt models:
 --   seed_persons_from_claude_team.sql
 --   seed_aliases_from_claude_team.sql
+--   seed_bootstrap_inputs_from_claude_team.sql
 -- ============================================================
 
 -- TEMPORARY: insight_tenant_id derived via sipHash128 until tenants table exists.
@@ -35,6 +42,7 @@ SELECT
     'claude_team',
     coalesce(role, ''),
     'claude_team',
+    -- completeness = non-empty golden attrs / 7 (display_name,email,username,role,manager,org_unit,location)
     (if(name IS NOT NULL AND name != '', 1, 0)
      + if(email != '', 1, 0)
      + if(role IS NOT NULL AND role != '', 1, 0)) / 7.0

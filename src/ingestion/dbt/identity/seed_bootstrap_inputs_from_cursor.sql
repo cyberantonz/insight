@@ -5,6 +5,12 @@
 -- Source: docs/domain/identity-resolution/specs/DECOMPOSITION.md §2.1
 --
 -- Run: dbt run --select seed_bootstrap_inputs_from_cursor
+--
+-- NOTE: schema='staging' is intentional. Unlike persons/aliases which write
+-- directly to canonical tables, bootstrap_inputs uses a multi-source union
+-- pattern: each source writes to staging.*, then identity.bootstrap_inputs
+-- (VIEW) aggregates them via union_by_tag. Consistent with bamboohr/zoom
+-- connector models that also target staging.
 
 {{ config(
     materialized='incremental',

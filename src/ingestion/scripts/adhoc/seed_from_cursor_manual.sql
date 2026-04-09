@@ -1,5 +1,11 @@
 -- ============================================================
--- Manual SQL for testing in ClickHouse Play UI
+-- ⚠ AD-HOC TESTING ONLY — NOT KEPT IN SYNC WITH DBT MODELS ⚠
+-- ============================================================
+-- Manual SQL for testing in ClickHouse Play UI.
+-- These are point-in-time snapshots of the dbt model logic.
+-- Canonical source of truth: src/ingestion/dbt/identity/seed_*.sql
+-- If dbt models change, these files may produce different results.
+--
 -- http://localhost:30123/play  (user: default, password: clickhouse_local)
 -- http://localhost:8123/play
 --
@@ -7,6 +13,7 @@
 -- Raw SQL equivalents of dbt models:
 --   seed_persons_from_cursor.sql
 --   seed_aliases_from_cursor.sql
+--   seed_bootstrap_inputs_from_cursor.sql
 -- ============================================================
 
 
@@ -30,6 +37,7 @@ SELECT
     'cursor',
     coalesce(role, ''),
     'cursor',
+    -- completeness = non-empty golden attrs / 7 (display_name,email,username,role,manager,org_unit,location)
     (if(name IS NOT NULL AND name != '', 1, 0)
      + if(email IS NOT NULL AND email != '', 1, 0)
      + if(role IS NOT NULL AND role != '', 1, 0)) / 7.0

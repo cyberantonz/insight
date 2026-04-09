@@ -9,6 +9,12 @@
 --
 -- Test manually: http://localhost:30123/play  (user: default, password: clickhouse_local)
 --   or:          http://localhost:8123/play
+--
+-- NOTE: schema='staging' is intentional. Unlike persons/aliases which write
+-- directly to canonical tables, bootstrap_inputs uses a multi-source union
+-- pattern: each source writes to staging.*, then identity.bootstrap_inputs
+-- (VIEW) aggregates them via union_by_tag. Consistent with bamboohr/zoom
+-- connector models that also target staging.
 
 {{ config(
     materialized='incremental',

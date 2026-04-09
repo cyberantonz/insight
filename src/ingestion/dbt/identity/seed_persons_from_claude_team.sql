@@ -42,6 +42,9 @@ SELECT
     ''                                                      AS org_unit_id_source,
     ''                                                      AS location,
     ''                                                      AS location_source,
+    -- completeness_score = non-empty golden attributes / 7 total
+    -- (display_name, email, username, role, manager_person_id, org_unit_id, location)
+    -- see: docs/domain/person/specs/DESIGN.md §3.7 Table: persons
     (if(name IS NOT NULL AND name != '', 1, 0)
      + if(email != '', 1, 0)
      + if(role IS NOT NULL AND role != '', 1, 0)
