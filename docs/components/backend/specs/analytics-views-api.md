@@ -22,9 +22,9 @@ authors: ["insight-front team"]
   - [4.7 Time Off Notice Metric](#47-time-off-notice-metric)
   - [4.8 Drill Metrics](#48-drill-metrics)
 - [5. Screen → Metric Mapping](#5-screen--metric-mapping)
-- [6. Frontend-Computed Fields](#6-frontend-computed-fields)
+- [6. Frontend-Computed Fields and Backend Threshold Evaluation](#6-frontend-computed-fields-and-backend-threshold-evaluation)
 - [7. Open Questions](#7-open-questions)
-- [8. Data Availability Envelope](#8-data-availability-envelope)
+- [8. Data Availability](#8-data-availability)
 - [9. CI Connector Roadmap](#9-ci-connector-roadmap)
 - [10. Implementation Checklist](#10-implementation-checklist)
 
@@ -35,7 +35,7 @@ authors: ["insight-front team"]
 ## 1. Scope
 
 This document defines what data the `insight-front` React frontend needs from the Analytics API,
-expressed in terms of the `Metric` and `Dashboard` entities defined in
+expressed in terms of the `Metric` entity defined in
 `docs/components/backend/specs/DESIGN.md`.
 
 It does **not** re-propose a new API shape. It adopts DESIGN.md as the architecture baseline
@@ -54,15 +54,16 @@ The following decisions from DESIGN.md are accepted in full:
 
 | Topic | Accepted approach |
 |---|---|
-| Query endpoint | `POST /api/v1/analytics/metrics/query` — OData query over seeded metric definitions |
-| Query paradigm | OData `$filter`, `$orderby`, `$select`, cursor pagination — per DNA REST conventions |
+| Query endpoint | `POST /api/analytics/v1/metrics/{id}/query` — metric UUID in URL path, OData query over seeded metric definitions |
+| Query paradigm | OData `$filter`, `$orderby`, `$select`, `$top` (default 25, max 200); cursor via `$skip` — per DNA REST conventions |
 | Date params | Date filtering via OData `$filter` (e.g. `metric_date ge '...' and metric_date lt '...'`); FE maps period labels to ranges |
 | Auth | `Authorization: Bearer <token>` only; `insight_tenant_id` extracted from JWT |
 | Team scoping | `org_unit_id` in OData `$filter`; **backend validates access** via AuthZEN PolicyEnforcer (see security note below) |
 | Person filter | Frontend sends Insight `person_ids` (UUIDs); backend resolves to source aliases |
 | Response shape | `{ items: Row[], page_info: { has_next, cursor } }` |
 | Errors | RFC 9457 Problem Details |
-| Metric management | CRUD via `POST/PUT/DELETE /api/v1/analytics/metrics` — Tenant Admin only |
+| Metric management | CRUD via `POST/PUT/DELETE /api/analytics/v1/metrics`; thresholds at `/api/analytics/v1/metrics/{id}/thresholds` — Tenant Admin only |
+| Threshold evaluation | Backend evaluates each row against metric's `thresholds` table and attaches `_thresholds: { field: level }` to every response row |
 
 **Security note — IDOR on `org_unit_id`:**
 Accepting `org_unit_id` from the request body requires a backend authorization check:
@@ -88,16 +89,16 @@ two responses.
 
 ### Remaining discrepancies with upstream DESIGN.md
 
-This document maps frontend needs to the `Metric` entity and `POST /metrics/query`
-endpoint from DESIGN.md. The following discrepancies still require clarification:
+All discrepancies from the original draft are resolved per cyberantonz comments (2026-04-14):
 
-| Topic | This document | Upstream DESIGN.md | Resolution needed |
-|---|---|---|---|
-| Metric `query_ref` semantics | Each metric below defines a multi-column ClickHouse SQL as `query_ref`; the query endpoint executes it with OData filters applied | `Metric.query_ref` type is `String` but its runtime semantics are unspecified | Confirm `query_ref` holds ClickHouse SQL executed by the query engine, and that `POST /metrics/query` accepts a metric ID to select which `query_ref` to run |
-| Stats / percentiles | §7 Q1 proposes a `/stats` extension for P5/P50/P95 | No stats endpoint in DESIGN.md | Propose addition or find alternative approach |
-| Threshold config | Frontend needs threshold CRUD for status computation and "Attention Needed" block (§7 Q2) | No threshold config entity in DESIGN.md; Dashboard `chart_configs` JSON could serve this | Confirm where to store threshold config within Analytics API |
-| Data availability | Proposed inline in query response (see §8) | Connector Manager: `GET /api/v1/connectors/connections/{id}/status` | Frontend may need to fetch `data_availability` from Connector Manager separately |
-| Person profile | §4.6 proposes a seeded metric | Identity Service: `GET /api/v1/identity/persons/{id}` | May use Identity Service directly; no analytics metric needed |
+| Topic | Resolution |
+|---|---|
+| Metric `query_ref` semantics | **Confirmed**: `query_ref` holds raw ClickHouse SQL. Query engine wraps it as subquery, appends security filters + OData filters as parameterized WHERE clauses, executes against ClickHouse. |
+| Metric UUID in request | **Confirmed**: `POST /api/analytics/v1/metrics/{id}/query` — UUID in path. OData params in body: `$filter`, `$orderby`, `$top`, `$select`, `$skip` (cursor). No `metric_id` in `$filter`. |
+| Stats / percentiles | **Resolved**: No separate stats endpoint. Seed a dedicated stats `Metric` per KPI with `quantile(0.05)(...)`, `quantile(0.50)(...)`, `quantile(0.95)(...)` in `query_ref`. Same query path as all other metrics. |
+| Threshold config | **Resolved**: Thresholds are nested under metrics. CRUD: `GET/POST /api/analytics/v1/metrics/{id}/thresholds`, `PUT/DELETE /api/analytics/v1/metrics/{id}/thresholds/{tid}`. Each threshold: `field_name`, `operator`, `value`, `level` (good/warning/critical). Evaluation is server-side — each query response row includes `_thresholds: { field_name: level }`. |
+| Data availability | **Resolved**: Analytics API does NOT include `data_availability` in query responses. Frontend calls Connector Manager directly: `GET /api/connectors/v1/connections/{id}/status`. See §8. |
+| Person profile | **Resolved**: Use Identity Service directly (`GET /api/identity-resolution/v1/persons/{id}`). No analytics metric needed for person header. |
 
 ---
 
@@ -109,7 +110,7 @@ endpoint from DESIGN.md. The following discrepancies still require clarification
 - ~~Custom `View` entity~~ — mapped to `Metric` entries from DESIGN.md §3.1
 - ~~JSON body `{ filters: {...}, order_by, limit }`~~ — replaced by OData `$filter` / `$orderby` / `$top`
 - ~~`periods` array for multi-period delta~~ — replaced by two parallel OData requests
-- ~~`status: good|warn|bad` computed by backend~~ — frontend computes from thresholds (see §6)
+- ~~`status: good|warn|bad` inlined in every field~~ — backend evaluates thresholds server-side and attaches `_thresholds: { field_name: 'good'|'warning'|'critical' }` per row (DESIGN.md §3.2)
 - ~~`trend_label` string from backend~~ — frontend computes from multi-period delta (see §6)
 
 ---
@@ -138,7 +139,7 @@ Source table annotations appear as `[source]` comments in metric definitions (§
 
 These are the `Metric` entries that need to be seeded into the Analytics API MariaDB catalog.
 Each metric has a stable UUID assigned at seed time. The frontend references metrics by UUID
-via `POST /api/v1/analytics/metrics/query`.
+via `POST /api/analytics/v1/metrics/{id}/query`.
 
 Each definition below specifies:
 - **`query_ref`** — conceptual ClickHouse SQL that the query engine executes
@@ -195,7 +196,7 @@ type ExecSummaryRow = {
 **OData query from frontend:**
 
 ```
-POST /api/v1/analytics/metrics/query
+POST /api/analytics/v1/metrics/{uuid}/query
 
 $filter=metric_date ge '2026-03-01' and metric_date lt '2026-04-01'
 $orderby=org_unit_name asc
@@ -264,7 +265,7 @@ type TeamMemberRow = {
 **OData query from frontend:**
 
 ```
-POST /api/v1/analytics/metrics/query
+POST /api/analytics/v1/metrics/{uuid}/query
 
 $filter=metric_date ge '2026-03-01' and metric_date lt '2026-04-01' and org_unit_id eq 'uuid-of-team'
 $orderby=display_name
@@ -609,91 +610,90 @@ from the server.
 
 ---
 
-## 6. Frontend-Computed Fields
+## 6. Frontend-Computed Fields and Backend Threshold Evaluation
 
-The following fields are **removed from backend responsibility** and will be computed
-on the frontend:
+### Backend — Threshold evaluation (server-side)
 
-| Field | Where previously | Frontend computation |
-|---|---|---|
-| `status: good\|warn\|bad` on `ExecTeamRow` | Backend computed | FE applies column thresholds to raw values |
-| `status` on `TeamKpi` | Backend computed | FE applies threshold config |
-| `trend_label` | Backend string | FE computes delta between two periods (current vs previous query) |
-| `delta` / `delta_type` on `IcKpi` | Backend computed | FE queries two date ranges and computes diff |
-| Bullet chart `bar_left_pct`, `median_left_pct`, `bar_width_pct` | Backend precomputed | See §7 open question #1 |
-| `prCycleScore` in `OrgKpis` | Backend formula unknown | FE displays raw `avg_pr_cycle_time_h`; score formula TBD |
+Per DESIGN.md §3.2 and cyberantonz confirmation, the Query Engine loads the `thresholds`
+table for each metric and evaluates every result row server-side. Each row in `items[]`
+includes a `_thresholds` field with the highest matched threshold level per field:
+
+```json
+{
+  "focus_time_pct": 0.58,
+  "pr_cycle_time_h": 26.4,
+  "_thresholds": {
+    "focus_time_pct": "warning",
+    "pr_cycle_time_h": "critical"
+  }
+}
+```
+
+The frontend reads `row._thresholds[fieldName]` to apply cell coloring.
+It does NOT compute status itself — this is fully managed by the backend.
+
+Threshold CRUD for Tenant Admin: `GET/POST /api/analytics/v1/metrics/{id}/thresholds`,
+`PUT/DELETE /api/analytics/v1/metrics/{id}/thresholds/{tid}`.
+
+### Frontend — fields still computed client-side
+
+| Field | Frontend computation |
+|---|---|
+| `trend_label` | FE computes delta between two periods (current vs previous query) |
+| `delta` / `delta_type` on `IcKpi` | FE queries two date ranges in parallel and computes diff |
+| `at_risk_count` on Team KPI strip | `COUNT` of members where `_thresholds` has any `critical` level |
+| `focus_gte_60` on Team KPI strip | `COUNT` where `focus_time_pct >= 60` |
+| `not_using_ai` on Team KPI strip | `COUNT` where `ai_tools.length === 0` |
+| Bullet chart `bar_left_pct`, `median_left_pct`, `bar_width_pct` | Computed from stats metric percentiles (§7 Q1 — resolved) |
+| `prCycleScore` in `OrgKpis` | FE displays raw `avg_pr_cycle_time_h`; score formula TBD |
 
 ---
 
 ## 7. Open Questions
 
-### Open Question 1 — Bullet chart distribution (P5/P50/P95)
+### ~~Open Question 1~~ — Bullet chart distribution (P5/P50/P95) — RESOLVED
 
-The Team and IC screens display bullet charts where the value marker is positioned
-relative to the team/org distribution. This requires P5, P50, and P95 of a given
-column across peers for the same period.
+**Resolution (cyberantonz, 2026-04-14):** No separate stats endpoint needed.
+Seed a dedicated stats `Metric` for each KPI distribution using ClickHouse `quantile()` functions in `query_ref`:
 
-**Decision: backend-computed percentiles only.** Computing percentiles client-side from
-raw rows is not acceptable: for large org units it would transfer significant data
-volumes unnecessarily and waste browser memory.
-
-**Proposed approach:** A dedicated stats metric (or extension to `POST /metrics/query`)
-that returns distribution data. Example request:
-
-```
-POST /api/v1/analytics/metrics/query
-
-metric_id: uuid-of-team-member-stats
-$filter=org_unit_id eq 'uuid-of-team' and metric_date ge '...' and metric_date lt '...'
-$select=focus_time_pct,pr_cycle_time_h
+```sql
+SELECT
+  quantile(0.05)(focus_time_pct) AS p5,
+  quantile(0.50)(focus_time_pct) AS p50,
+  quantile(0.95)(focus_time_pct) AS p95
+FROM ...
+WHERE org_unit_id = ?
+  AND date >= ?
+  AND date < ?
 ```
 
-Response:
+The frontend queries this stats metric once per screen load (same endpoint, same OData path),
+and uses the returned P5/P50/P95 values to position bullet chart markers.
 
-```json
-{
-  "items": [{
-    "focus_time_pct":  { "p5": 32, "p50": 61, "p95": 84 },
-    "pr_cycle_time_h": { "p5": 8,  "p50": 22, "p95": 48 }
-  }]
-}
-```
-
-ClickHouse's native `quantile(0.05)(...)`, `quantile(0.50)(...)`, `quantile(0.95)(...)`
-handle this in a single query pass.
-
-**Action needed:** Confirm whether `POST /metrics/query` can return aggregate stats
-like this, or if a separate endpoint/metric type is needed. DESIGN.md does not
-currently specify a stats capability.
+**Seeded stats metrics needed:** one per KPI column used in bullet charts
+(e.g. `focus_time_pct`, `pr_cycle_time_h`, `ai_loc_share_pct` for Team screen).
 
 ---
 
-### Open Question 2 — Threshold and "Attention Needed" config
+### ~~Open Question 2~~ — Threshold and "Attention Needed" config — RESOLVED
 
-The frontend needs two kinds of threshold configuration, both per-tenant, admin-configurable:
+**Resolution (cyberantonz, 2026-04-14):** Thresholds are nested under each metric.
+CRUD endpoints:
 
-1. **Column thresholds** — to compute `status: good|warn|bad` on table cells (§6).
-   E.g. `build_success_pct >= 90 → good, < 90 → warn`.
-
-2. **Alert thresholds** — to populate the "Attention Needed" block on the Team screen.
-   E.g. "flag member if `focus_time_pct < 40` for 2+ consecutive periods".
-
-Both are purely frontend-applied — the backend stores the config, the frontend fetches
-it and applies locally to the data it already has from the analytics query. This has
-**nothing to do with the Alerts Service** from DESIGN.md (which sends email notifications).
-
-**Proposed:** A config resource within the Analytics API:
-
-```http
-GET  /api/v1/analytics/config/thresholds
-POST /api/v1/analytics/config/thresholds
-PUT  /api/v1/analytics/config/thresholds/{id}
+```
+GET    /api/analytics/v1/metrics/{id}/thresholds
+POST   /api/analytics/v1/metrics/{id}/thresholds
+PUT    /api/analytics/v1/metrics/{id}/thresholds/{tid}
+DELETE /api/analytics/v1/metrics/{id}/thresholds/{tid}
 ```
 
-**Questions:**
-- Is this part of the Dashboard entity (`chart_configs` JSON) or a separate entity?
-- How does the frontend know which threshold set applies to which screen?
-- Should column thresholds and alert thresholds be the same entity or separate?
+Each threshold: `field_name`, `operator` (gt/ge/lt/le/eq), `value` (decimal), `level` (good/warning/critical).
+
+Evaluation is **server-side** — the Query Engine attaches `_thresholds` to every result row (see §6).
+Frontend reads `_thresholds` for cell coloring and for `at_risk_count` ("Attention Needed" block).
+
+Both column thresholds (cell coloring) and alert thresholds are the same entity differentiated by
+`level`. The frontend uses `critical` level for "Attention Needed" block membership.
 
 ---
 
@@ -708,73 +708,48 @@ and handles a null value gracefully (renders nothing).
 
 ---
 
-## 8. Data Availability Envelope
+## 8. Data Availability
 
-Each query response should include a `data_availability` metadata object so the frontend
-can show "Not configured" states instead of misleading zeros.
+**Resolution:** The Analytics API does NOT include `data_availability` in query responses.
+This is the Connector Manager's responsibility. The frontend calls Connector Manager directly:
 
-> **Source:** The Connector Manager exposes sync status at
-> `GET /api/v1/connectors/connections/{id}/status` (DESIGN.md §3.3). The frontend may
-> need to call this endpoint separately and merge the result with analytics data.
-> Alternatively, the Analytics API could include `data_availability` inline in query
-> responses. **Pending decision — this section describes the desired shape regardless of
-> which service provides it.**
+```
+GET /api/connectors/v1/connections/{id}/status
+```
 
-**Desired shape** (whether inline in query response or from Connector Manager):
+The frontend fetches connector status in parallel with analytics queries and merges
+the result client-side to show "Not configured" states instead of misleading zeros.
+
+**Desired shape from Connector Manager** (one call per connector type needed on screen):
 
 ```json
 {
-  "items": [...],
-  "page_info": { "has_next": false, "cursor": null },
-  "data_availability": {
-    "git":   { "status": "available",    "last_synced_at": "2026-04-09T06:00:00Z" },
-    "tasks": { "status": "no-connector", "last_synced_at": null },
-    "ci":    { "status": "no-connector", "last_synced_at": null },
-    "comms": { "status": "available",    "last_synced_at": "2026-04-09T05:30:00Z" },
-    "hr":    { "status": "available",    "last_synced_at": "2026-04-09T04:00:00Z" },
-    "ai":    { "status": "available",    "last_synced_at": "2026-04-09T06:10:00Z" }
-  }
+  "status": "available",
+  "last_synced_at": "2026-04-09T06:00:00Z"
 }
 ```
 
 **Status values:**
 
-| Value | Meaning | Effect on fields |
+| Value | Meaning | Effect on UI |
 |---|---|---|
-| `available` | Connector configured, all sources synced | Fields return real values |
-| `partial` | Connector configured, but not all sources synced (e.g. 9 of 10 repos) | Fields return real values with a coverage warning |
-| `no-connector` | Connector not configured | Affected fields return `null` |
-| `syncing` | Initial full sync in progress — no data yet | Affected fields return `null` |
+| `available` | Connector configured and synced | Fields show real values |
+| `partial` | Connector configured, not all sources synced | Fields show real values with coverage warning |
+| `no-connector` | Connector not configured | Affected fields show "—" or "Not configured" |
+| `syncing` | Initial full sync in progress | Affected fields show "—" |
 
 `partial` prevents misleading `available` when, for example, one GitHub repository
 is still onboarding. The frontend surfaces a banner: "Data may be incomplete —
 not all sources have synced."
 
-**Affected fields when `no-connector` or `syncing`:**
+**Affected fields per connector:**
 
-- `tasks`: `tasks_closed`, `bugs_fixed` → `null`
-- `ci`: `build_success_pct` → `null`
+- `tasks` (Jira): `tasks_closed`, `bugs_fixed` → show "—" when `no-connector` or `syncing`
+- `ci` (GitHub Actions / Bitbucket Pipelines): `build_success_pct` → show "—" when `no-connector` or `syncing`
 
-**Partial availability (reviewer comment, line 338):**
-
-`syncing` applies only to the **initial full sync** — when a connector is first configured
-and ClickHouse has no data yet for that source. Once any data is present, the status
-returns to `available` even if a reconnect or incremental sync is in progress.
-
-`last_synced_at` lets the frontend show "data through [date]" when a connector
-has not synced recently — for example, if GitHub Actions was disconnected yesterday,
-`git.status = 'available'` but `git.last_synced_at` is 24h old, and the frontend
-can surface a warning banner.
-
-This avoids the scenario of hiding 10 weeks of valid historical data just because
-a short-lived reconnect is happening.
-
-**Scope: `data_availability` is per-org-unit, not per-tenant.**
-If Jira is configured for only 2 of 5 teams, a tenant-global `tasks: no-connector`
-would incorrectly hide task data for the 2 teams that have it. The backend must compute
-`data_availability` in the context of the requested `org_unit_id` (or org-wide scope
-for Executive Summary). An org unit with no Jira project linked should return
-`tasks: no-connector`; one with Jira configured returns `tasks: available`.
+**Scope: per-org-unit, not per-tenant.**
+If Jira is configured for only 2 of 5 teams, connector status must be fetched with org unit context.
+An org unit with no Jira project linked returns `no-connector`; one with Jira configured returns `available`.
 
 ---
 
@@ -851,19 +826,22 @@ Once `class_ci_runs` is available:
 
 ## 10. Implementation Checklist
 
-### Open items requiring backend confirmation
+### Resolved — backend confirmations (cyberantonz, 2026-04-14)
 
-- [ ] Confirm `Metric.query_ref` holds ClickHouse SQL executed by the query engine
-- [ ] Confirm `POST /metrics/query` accepts a metric UUID to select which `query_ref` to run
-- [ ] Confirm how `$filter` parameters map to `query_ref` placeholders (OData → ClickHouse bind)
-- [ ] Confirm threshold config storage within Analytics API (separate entity or Dashboard JSON)
-- [ ] Confirm `data_availability` source: inline in query response or from Connector Manager
-- [ ] Confirm person profile from Identity Service (`GET /api/v1/identity/persons/{id}`)
+- [x] `Metric.query_ref` holds raw ClickHouse SQL executed by the query engine
+- [x] Metric UUID in URL path: `POST /api/analytics/v1/metrics/{id}/query`
+- [x] OData params in body: `$filter`, `$orderby`, `$top`, `$select`, `$skip` (cursor)
+- [x] `org_unit_id` in `$filter` validated against AccessScope (IDOR prevention)
+- [x] Threshold CRUD at `GET/POST /api/analytics/v1/metrics/{id}/thresholds`
+- [x] Threshold evaluation is server-side — `_thresholds` field in every response row
+- [x] P5/P50/P95 via regular seeded stats metrics with `quantile()` in `query_ref`
+- [x] `data_availability` from Connector Manager, not Analytics API
+- [x] Person profile from Identity Service: `GET /api/identity-resolution/v1/persons/{id}`
 
 ### Backend — Metric Catalog Seeding
 
-- [ ] `POST /api/v1/analytics/metrics` — seed all metric definitions listed below
-- [ ] `POST /api/v1/analytics/metrics/query` — execute with OData `$filter` / `$orderby` / `$top`
+- [ ] `POST /api/analytics/v1/metrics` — seed all metric definitions listed below
+- [ ] `POST /api/analytics/v1/metrics/{id}/query` — execute with OData `$filter` / `$orderby` / `$top`
 
 **Metrics to seed:**
 
@@ -880,16 +858,16 @@ Once `class_ci_runs` is available:
 
 > **Note:** Person Profile (§4.6) is NOT seeded as a metric — use Identity Service directly.
 
-### Backend — Stats / Percentiles (Open Question 1)
+### ~~Backend — Stats / Percentiles (Open Question 1)~~ — RESOLVED
 
-- [ ] Confirm how P5/P50/P95 can be served via `POST /metrics/query` (separate metric or endpoint extension)
-- [ ] If backend: implement `quantile` aggregation in query engine
+- [x] Seed stats metrics per KPI with `quantile(0.05)`, `quantile(0.50)`, `quantile(0.95)` in `query_ref`
+- No separate endpoint needed — same `POST /api/analytics/v1/metrics/{id}/query` path
 
-### Backend — Threshold Config (Open Question 2)
+### ~~Backend — Threshold Config (Open Question 2)~~ — RESOLVED
 
-- [ ] Threshold config CRUD (GET/POST/PUT) at `/api/v1/analytics/config/thresholds`
-- [ ] Decide: separate entity or part of Dashboard `chart_configs` JSON
-- [ ] Column thresholds (status coloring) + alert thresholds ("Attention Needed" block)
+- [x] Threshold CRUD at `/api/analytics/v1/metrics/{id}/thresholds` (GET/POST/PUT/DELETE)
+- [x] Threshold evaluation server-side; `_thresholds` field in every response row
+- [ ] Seed initial thresholds for V1 metrics (good/warning/critical per field)
 
 ### Backend — Jira connector (unblocks `tasks_closed`, `bugs_fixed`) — **P1 priority**
 
@@ -915,7 +893,7 @@ only Git metrics, which are misleading for management without business delivery 
 - [x] `METRIC_KEYS` catalog in `types/index.ts`
 - [ ] Build OData query builder (compose `$filter`, `$orderby`, `$top` from UI state)
 - [ ] Switch from period enum to `metric_date` OData `$filter` ranges
-- [ ] Move `status` computation to frontend (apply thresholds to raw values)
+- [ ] Read `_thresholds` field from response rows for cell coloring (replaces client-side threshold computation)
 - [ ] Move `delta`/`delta_type` computation to frontend (two parallel requests, diff)
-- [ ] Add Identity Service call for IC person header (`GET /api/v1/identity/persons/{id}`)
-- [ ] Add Connector Manager call for data availability (if not inline in query response)
+- [ ] Add Identity Service call for IC person header (`GET /api/identity-resolution/v1/persons/{id}`)
+- [ ] Fetch connector status from Connector Manager in parallel with analytics queries
