@@ -6,7 +6,7 @@ namespace: insight
 
 # ── OIDC ─────────────────────────────────────────────
 oidc:
-  issuerUrl: "https://integrator-4985807.okta.com/oauth2/default"
+  issuer: "https://integrator-4985807.okta.com/oauth2/default"
   clientId: "0oa11o77z8qysGwEK698"
   redirectUri: "http://localhost:18080/callback"
 

@@ -66,7 +66,7 @@ modules:
 
   # ─── Auth Info (public endpoint for frontend) ───────────────
   # NOTE: issuer_url MUST match oidc-authn-plugin.config.issuer_url above.
-  # Both are set from the same OIDC_ISSUER_URL env var / Helm oidc.issuerUrl value.
+  # Both are set from the same OIDC_ISSUER_URL env var / Helm oidc.issuer value.
   auth-info:
     config:
       issuer_url: "${OIDC_ISSUER_URL}"

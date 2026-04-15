@@ -28,7 +28,7 @@ resources:
 
 # OIDC configuration (required for production)
 oidc:
-  issuerUrl: ""           # e.g., https://dev-12345.okta.com/oauth2/default
+  issuer: ""              # e.g., https://dev-12345.okta.com/oauth2/default
   audience: ""            # e.g., api://insight
   clientId: ""            # Frontend (public) OIDC client ID
   redirectUri: ""         # e.g., https://insight.example.com/callback

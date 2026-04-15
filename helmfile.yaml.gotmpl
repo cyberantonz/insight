@@ -101,7 +101,7 @@ releases:
           pullPolicy: IfNotPresent
         authDisabled: false
         oidc:
-          issuerUrl: {{ .Values.oidc.issuerUrl | quote }}
+          issuer: {{ .Values.oidc.issuer | quote }}
           clientId: {{ .Values.oidc.clientId | quote }}
           audience: "api://default"
           redirectUri: {{ .Values.oidc.redirectUri | quote }}

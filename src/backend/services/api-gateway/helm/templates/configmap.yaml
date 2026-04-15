@@ -48,7 +48,7 @@ data:
           vendor: "hyperspot"
           priority: 50
           {{- if not .Values.authDisabled }}
-          issuer_url: {{ .Values.oidc.issuerUrl | quote }}
+          issuer_url: {{ .Values.oidc.issuer | quote }}
           audience: {{ .Values.oidc.audience | quote }}
           {{- else }}
           issuer_url: "https://disabled.example.com"
@@ -62,7 +62,7 @@ data:
       auth-info:
         config:
           {{- if not .Values.authDisabled }}
-          issuer_url: {{ .Values.oidc.issuerUrl | quote }}
+          issuer_url: {{ .Values.oidc.issuer | quote }}
           client_id: {{ .Values.oidc.clientId | quote }}
           redirect_uri: {{ .Values.oidc.redirectUri | quote }}
           {{- else }}
