@@ -339,9 +339,9 @@ Spaces are collected as full refresh on every run (small cardinality).
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-conf-instance-context`
 
-Every record emitted by the connector **MUST** include `insight_source_id` (identifying the specific Confluence instance) and `data_source` (set to `insight_confluence` for all records). The `tenant_id` (identifying the Insight tenant) **MUST** be present on every record — it is injected by the Airbyte platform or destination layer from the connection configuration, not emitted by the connector manifest itself.
+Every record emitted by the connector **MUST** include `tenant_id` (identifying the Insight tenant), `insight_source_id` (identifying the specific Confluence instance), and `data_source` (set to `insight_confluence` for all records). All three fields are injected by the connector manifest via `AddFields` transformations using values from the connector configuration (`insight_tenant_id`, `insight_source_id` config parameters).
 
-**Note on Bronze schema**: The current `wiki_*` Bronze schemas in `README.md` define `insight_source_id` and `data_source` but do not define a `tenant_id` column. `tenant_id` is a platform-level concern injected at the destination layer (e.g., via Airbyte custom transformation or ClickHouse materialized column). The connector configuration **MUST** include `tenant_id` as a parameter so the platform can inject it. URN-based primary keys reference `{tenant_id}` — the DESIGN must specify the injection mechanism.
+**Note on Bronze schema**: The connector manifest injects `tenant_id`, `source_id`, and `data_source` onto every record via `AddFields`. URN-based primary keys (`unique_key`) incorporate `{tenant_id}-{source_id}-{natural_key}`, ensuring cross-instance uniqueness. See DESIGN §3.3 for the injection pattern.
 
 **Rationale**: Multiple Confluence instances may feed into the same Bronze store. The `data_source` field enables the Silver pipeline to distinguish Confluence-originated records from Outline-originated records in the unified `wiki_*` schema.
 
@@ -530,7 +530,7 @@ The connector **MUST** extract all pages and versions matching the configured sp
 - [ ] `email` resolved and backfilled into page and activity records; null when unavailable
 - [ ] Every record carries a destination-level version column used for deduplication (framework-managed `_airbyte_extracted_at` in Phase 1; see DESIGN §3.7)
 - [ ] URN-based surrogate primary keys on entity streams
-- [ ] `insight_source_id` and `data_source = 'insight_confluence'` emitted by connector; `tenant_id` injected by platform
+- [ ] `tenant_id`, `insight_source_id`, and `data_source = 'insight_confluence'` injected by connector manifest via `AddFields`
 - [ ] All timestamps stored in UTC
 - [ ] Collection run log (`confluence_collection_runs`) records success, per-stream counts, API call count, analytics availability, unresolved email count, spaces visible count, and per-page error count
 - [ ] API throttling (HTTP 429 and 503) handled with exponential backoff
