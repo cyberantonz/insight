@@ -14,11 +14,6 @@ on:
       - "src/ingestion/**"
       - ".github/workflows/build-images.yml"
   workflow_dispatch:
-    inputs:
-      build_all:
-        description: "Build all images regardless of changes"
-        type: boolean
-        default: true
 
 env:
   REGISTRY: ghcr.io
@@ -81,7 +76,7 @@ jobs:
         with:
           context: src/backend
           file: src/backend/${{ matrix.dockerfile }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -114,7 +109,7 @@ jobs:
         with:
           context: src/ingestion
           file: src/ingestion/tools/toolbox/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
