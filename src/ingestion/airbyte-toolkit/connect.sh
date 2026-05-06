@@ -206,6 +206,33 @@ def resolve_clickhouse_password():
         sys.exit(1)
     return base64.b64decode(result.stdout.strip()).decode()
 
+_platform_cm_cache = None
+
+def _platform_cm():
+    """Fetch the umbrella's `insight-platform` ConfigMap once and cache the
+    `.data` dict for in-memory lookup by subsequent _resolve_platform_value
+    calls. Halves kubectl forks for the typical USER+DATABASE pair (and scales
+    cleanly if more platform-derived coordinates are added — port, host, …)."""
+    global _platform_cm_cache
+    if _platform_cm_cache is not None:
+        return _platform_cm_cache
+    result = subprocess.run(
+        ["kubectl", "get", "configmap", "insight-platform", "-n", INSIGHT_NAMESPACE,
+         "-o", "json"],
+        capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0:
+        print(f"ERROR: failed to read ConfigMap insight-platform in namespace '{INSIGHT_NAMESPACE}'", file=sys.stderr)
+        if result.stderr.strip():
+            print(f"  {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(result.returncode)
+    try:
+        _platform_cm_cache = json.loads(result.stdout).get("data", {}) or {}
+    except json.JSONDecodeError as e:
+        print(f"ERROR: ConfigMap insight-platform returned non-JSON payload: {e}", file=sys.stderr)
+        sys.exit(1)
+    return _platform_cm_cache
+
 def _resolve_platform_value(env_name, configmap_key):
     """Read a ClickHouse coordinate (USER, DATABASE) from env var first, then from
     the umbrella's `insight-platform` ConfigMap in the release namespace. Fail
@@ -214,26 +241,13 @@ def _resolve_platform_value(env_name, configmap_key):
     env_val = os.environ.get(env_name)
     if env_val:
         return env_val
-    result = subprocess.run(
-        ["kubectl", "get", "configmap", "insight-platform", "-n", INSIGHT_NAMESPACE,
-         "-o", f"jsonpath={{.data.{configmap_key}}}"],
-        capture_output=True, text=True, timeout=10
-    )
-    # Distinguish kubectl failure (RBAC, network, missing ConfigMap object,
-    # context error) from ConfigMap-present-but-key-absent. The first must
-    # surface kubectl's stderr so operators can diagnose; the second uses
-    # our fail-fast hint about env-var override.
-    if result.returncode != 0:
-        print(f"ERROR: failed to read ConfigMap insight-platform in namespace '{INSIGHT_NAMESPACE}'", file=sys.stderr)
-        if result.stderr.strip():
-            print(f"  {result.stderr.strip()}", file=sys.stderr)
-        sys.exit(result.returncode)
-    if not result.stdout.strip():
+    val = (_platform_cm().get(configmap_key) or "").strip()
+    if not val:
         print(f"ERROR: {configmap_key} not found in ConfigMap insight-platform "
               f"(namespace '{INSIGHT_NAMESPACE}')", file=sys.stderr)
         print(f"  Set the {env_name} env var or ensure the umbrella chart is installed.", file=sys.stderr)
         sys.exit(1)
-    return result.stdout.strip()
+    return val
 
 ch_password = resolve_clickhouse_password()
 ch_username = _resolve_platform_value("CLICKHOUSE_USER", "CLICKHOUSE_USER")
