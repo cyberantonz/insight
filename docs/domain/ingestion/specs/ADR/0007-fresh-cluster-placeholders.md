@@ -65,12 +65,27 @@ Rules for the placeholder:
      the bronze schema and overwrites whatever the placeholder shipped.
    - **Silver placeholders** are *not* automatically replaced by dbt's
      incremental materialization (which `INSERT INTO`s an existing
-     relation). To force replacement on the first real dbt run, every
-     silver placeholder is created with the table comment
-     `INSIGHT_PLACEHOLDER_v1`, and the project-level pre_hook
-     `drop_placeholder_if_present` (in
-     `src/ingestion/dbt/macros/drop_placeholder_if_present.sql`) drops
-     any table that matches the marker AND has zero rows. dbt's
+     relation). To force replacement on the first real dbt run when
+     staging has been materialised, every silver placeholder is
+     created with the table comment `INSIGHT_PLACEHOLDER_v1`, and the
+     project-level `on-run-start` hook
+     `drop_silver_placeholders_at_start` (in
+     `src/ingestion/dbt/macros/drop_silver_placeholders_at_start.sql`)
+     drops any silver target that matches a **three-factor**
+     signature: marker + zero rows + at least one staging model with
+     tag `silver:<identifier>` materialised. The third factor is
+     required because `union_by_tag`'s no-source-tables fallback
+     emits `SELECT * FROM {{ this }} WHERE 1 = 0` to preserve schema
+     — dropping the target before staging exists would break that
+     fallback (`Code: 60 UNKNOWN_TABLE`). When the third factor
+     fails, the placeholder is preserved and the silver materialise
+     becomes a no-op (incremental INSERT of zero rows). The hook
+     runs in `on-run-start` (not a per-model `pre-hook`) because
+     dbt-clickhouse captures the target's existence at the start of
+     materialization for `is_incremental()` — dropping inside a
+     pre_hook leaves `is_incremental` as `True` and the compiled
+     SQL still references the now-dropped target, producing a
+     `SYNTAX_ERROR`. dbt's
      incremental materialization then sees no existing relation and
      creates the table with the model's full schema, engine, and
      ORDER BY.
