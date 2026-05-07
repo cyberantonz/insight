@@ -166,6 +166,18 @@ models:
       First contributor: Confluence (`confluence__wiki_engagement`). Other
       wiki sources can hook in later by adding staging models tagged
       `silver:class_wiki_engagement`.
+
+      Design note (#285 AC#2 waiver): the issue's literal AC#2 asked for
+      per-event comment rows to be added to `class_wiki_activity` with a
+      `person_key`. We deliberately delivered a separate per-page-day
+      class instead — the page-centric grain matches the use cases in
+      the issue ("got 12 comments from 5 reviewers" vs "published and
+      ignored"), keeps the existing per-author-day grain of
+      `class_wiki_activity` (set after #259) intact, and avoids mixing
+      two metric families with different scaling profiles in one table.
+      A future per-person comment-activity model — if a use case lands
+      — should read from the same 4 bronze streams without retrofitting
+      either existing class.
     columns:
       - name: tenant_id
         description: "Tenant isolation field"

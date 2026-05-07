@@ -4,6 +4,12 @@
 -- activity ON THAT PAGE on that day across all comment kinds. Feeds
 -- "engagement vs ignored" page-level dashboards (issue #285).
 --
+-- AC#2 waiver note (issue #285): the issue's literal AC#2 asked for
+-- per-event comment rows in `class_wiki_activity` keyed on `person_key`.
+-- We deliberately deliver a per-page-day class instead — see the
+-- design-note block on `class_wiki_engagement` in
+-- `src/ingestion/silver/wiki/schema.yml` for the rationale.
+--
 -- Sources (4 bronze tables, all populated by the comments substreams
 -- added in PR for #285):
 --   wiki_footer_comments         top-level page-bottom comments
