@@ -21,8 +21,11 @@
 --   - `is_reply` = 1 if from a *_replies table
 --   - `is_inline` = 1 if from a wiki_inline_*  table
 --   - `day` = toDate(created_at) — Confluence timestamps are UTC
---   - `unique_key` (post-aggregate) = MD5({tenant}-{source}-{page}-{day})
---     so the silver table can dedup via ReplacingMergeTree
+--   - `unique_key` (post-aggregate) = `{tenant}-{source}-{page_id}-{day}`
+--     plain dash-concat per ADR-0004 (Option A — human-readable, prefix-
+--     searchable, uniform across producers). Sibling models
+--     `confluence__wiki_pages` / `confluence__wiki_activity` use the same
+--     shape.
 --
 -- Derived metrics:
 --   total_comments          all 4 streams combined
@@ -43,6 +46,7 @@
 --   - Materialized as a view (cheap recompute); promote to incremental
 --     keyed on (page_id, day) if comment volume grows past ~1M rows.
 
+-- depends_on: {{ ref('confluence__bronze_promoted') }}
 {{ config(
     materialized='view',
     schema='staging',
@@ -108,12 +112,12 @@ WITH comments AS (
 SELECT
     tenant_id,
     source_id,
-    CAST(MD5(concat(
+    CAST(concat(
         coalesce(tenant_id, ''), '-',
         coalesce(source_id, ''), '-',
         coalesce(page_id, ''), '-',
         toString(toDate(created_ts))
-    )) AS FixedString(16))                                  AS unique_key,
+    ) AS String)                                            AS unique_key,
     page_id,
     toDate(created_ts)                                      AS day,
     -- counts
