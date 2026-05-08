@@ -155,7 +155,7 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 ### 3.1 Module-Specific Environment Constraints
 
 - Requires outbound HTTPS access to `api.github.com` (authentication + metrics envelope fetch) and `copilot-reports.github.com` (NDJSON payload download).
-- Authentication to `api.github.com` via PAT (classic) with `manage_billing:copilot` **and `read:org`** scopes, sent via `Authorization: Bearer {token}`. `manage_billing:copilot` is required for the seats endpoint; `read:org` is additionally required for the metrics reports endpoints. Only Organization Owners can create tokens with these scopes; fine-grained PATs do not support them.
+- Authentication to `api.github.com` via PAT (classic) with `manage_billing:copilot` scope, sent via `Authorization: Bearer {token}`. This scope covers both the seats endpoint and the metrics reports endpoints. Only Organization Owners can create tokens with this scope; fine-grained PATs do not support it.
 - The metrics reports API returns HTTP 204 (No Content) when no data exists for the requested day (e.g., dates before 2025-10-10 or future dates). The connector **MUST** treat HTTP 204 as a valid empty response — emit 0 records for that day and advance the cursor.
 - The Copilot reports API only has data from **2025-10-10** onwards; requests for earlier dates return HTTP 204.
 - Download requests to `copilot-reports.github.com` **MUST NOT** include an `Authorization` header — the URLs are pre-authenticated; sending auth headers may cause request failures.

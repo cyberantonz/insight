@@ -266,7 +266,7 @@ The `descriptor.yaml` at `src/ingestion/connectors/ai/github-copilot/descriptor.
 | `workflow` | `sync` | Standard Airbyte sync workflow |
 | `connection.namespace` | `bronze_github_copilot` | Bronze destination namespace |
 
-Class-level Silver tags (`silver:class_ai_dev_usage`, `silver:class_ai_org_usage`) are intentionally not added in Phase 1 — they will be introduced alongside Silver framework changes.
+The `copilot__ai_dev_usage` staging model is tagged `silver:class_ai_dev_usage` and is active. The `copilot__ai_org_usage` staging model is tagged `silver:class_ai_org_usage` but ships with `enabled=false` pending creation of the `class_ai_org_usage` Silver class.
 
 #### SourceGitHubCopilot
 
@@ -793,29 +793,18 @@ Connection: github-copilot-{org_name}-daily
 | (constant) | `data_source` | `'insight_github_copilot'` |
 | — | `session_count` | `toUInt32(1)` per active day (Copilot has no session counter) |
 | `loc_added_sum` | `lines_added` | `toUInt32(coalesce(loc_added_sum, 0))` |
-| — | `lines_removed` | `toUInt32(0)` — Copilot reports only added lines |
-| — | `total_lines_added`, `total_lines_removed` | NULL — Copilot does not see total keystrokes |
+| `loc_deleted_sum` | `lines_removed` | `toUInt32(coalesce(loc_deleted_sum, 0))` |
+| — | `total_lines_added`, `total_lines_removed` | NULL — Copilot reports only AI-accepted lines, no view of total keystrokes |
 | `code_acceptance_activity_count` | `tool_use_accepted` | Rename |
-| — | `tool_use_offered` | NULL — Copilot does not expose «offered» counter |
+| `code_generation_activity_count` | `tool_use_offered` | Proxy: each generation event ≈ one offered suggestion; v2 API does not split offered from rejected |
 | `code_acceptance_activity_count` | `completions_count` | Same value as `tool_use_accepted` |
-| `used_agent`<br/>(boolean) | `agent_sessions` | NULL — Copilot's `used_agent` is a flag, not a counter; populated as boolean in `used_agent_today` (extension column below) |
-| — | `chat_requests` | NULL — Copilot does not expose IDE-chat counter |
+| `used_agent` (boolean) | `agent_sessions` | `if(used_agent, toUInt32(1), NULL)` — activity marker per active day |
+| `used_chat` (boolean) | `chat_requests` | `if(used_chat, toUInt32(1), NULL)` — activity marker per active day |
 | — | `cost_cents` | NULL — Copilot is per-seat subscription, not per-event consumption |
-| — | `commits_count`, `pull_requests_count`, `tool_action_breakdown_json` | NULL — these are Claude Enterprise extensions; Copilot does not produce them |
-| `used_chat` | `used_chat_today` | **NEW Silver column** (boolean). NULL for Cursor/Claude Enterprise rows |
-| `used_agent` | `used_agent_today` | **NEW Silver column** (boolean) |
-| `used_cli` | `used_cli_today` | **NEW Silver column** (boolean) |
+| — | `commits_count`, `pull_requests_count` | NULL — per-user attribution not available at user grain |
+| `used_chat`, `used_agent`, `used_cli` | `tool_action_breakdown_json` | `{"used_chat": bool, "used_agent": bool, "used_cli": bool}` — activity flags packed as JSON; `used_cli` has no dedicated column slot in the base schema |
 | `_airbyte_extracted_at` | `_version` | `toUnixTimestamp64Milli(_airbyte_extracted_at)` per ADR-0001 |
 | `collected_at` | `collected_at` | Parse to `DateTime64(3)` |
-
-**Required pre-activation changes to the existing Silver class**:
-
-1. `silver/ai/schema.yml` — add three columns (`used_chat_today`, `used_agent_today`, `used_cli_today`) to `class_ai_dev_usage` definition with description "Copilot-specific. NULL for Cursor / Claude Code rows."
-2. `silver/ai/schema.yml` — extend `tool.accepted_values` with `'copilot'` and `source.accepted_values` with `'copilot'`.
-3. `cursor__ai_dev_usage.sql` — add `CAST(NULL AS Nullable(UInt8)) AS used_chat_today, used_agent_today, used_cli_today` to maintain UNION ALL column alignment. Same for `claude_enterprise__ai_dev_usage.sql`.
-4. **No data migration is required for existing rows** — `ALTER TABLE ADD COLUMN` (which `on_schema_change='append_new_columns'` will run automatically) creates the columns as NULL on existing data.
-
-These four edits are bundled into the same PR that activates the Copilot staging model.
 
 #### Org Metrics → `class_ai_org_usage` (deferred — class to be created)
 
@@ -857,7 +846,7 @@ These four edits are bundled into the same PR that activates the Copilot staging
 | Bronze table | Silver target | Status |
 |-------------|--------------|--------|
 | `copilot_seats` | Identity resolution input (`user_email` join dimension) | Active |
-| `copilot_user_metrics` | `class_ai_dev_usage` via `copilot__ai_dev_usage` | Deferred (dbt model not yet committed; Silver schema extension required — see §4 mapping) |
+| `copilot_user_metrics` | `class_ai_dev_usage` via `copilot__ai_dev_usage` | Active — `tool_action_breakdown_json` carries Copilot-specific flags (`used_chat`, `used_agent`, `used_cli`) |
 | `copilot_org_metrics` | `class_ai_org_usage` via `copilot__ai_org_usage` | Deferred (Silver view pending) |
 | `copilot_collection_runs` | Monitoring only | Deferred to Phase 2 |
 

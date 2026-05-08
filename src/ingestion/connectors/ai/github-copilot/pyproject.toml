@@ -18,3 +18,6 @@ source-github-copilot = "source_github_copilot.source:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["source_github_copilot*"]
+
+[tool.setuptools.package-data]
+"source_github_copilot" = ["spec.json"]

@@ -119,9 +119,10 @@ models:
           Claude Enterprise only (code_pull_request_count). NULL for Cursor.
       - name: tool_action_breakdown_json
         description: >
-          Raw JSON breakdown of tool actions per tool type
-          (edit/write/multi_edit/notebook_edit with accepted/rejected counts).
-          Populated for Claude Enterprise only (claude_code_metrics_json from Bronze).
+          Raw JSON breakdown of tool actions per tool type.
+          Claude Enterprise: edit/write/multi_edit/notebook_edit with accepted/rejected counts
+          (from claude_code_metrics_json in Bronze).
+          Copilot: activity flags {"used_chat": bool, "used_agent": bool, "used_cli": bool}.
           NULL for Cursor (Cursor does not expose per-tool-type breakdown at daily grain).
       - name: source
         description: "Staging-model discriminator: 'cursor' | 'claude_admin' | 'claude_enterprise' | 'copilot' | future sources"

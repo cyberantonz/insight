@@ -131,11 +131,15 @@ class SourceGitHubCopilot(AbstractSource):
                     "'Copilot usage metrics'. "
                     f"API response: {resp.text[:200]}"
                 )
-            if resp.status_code not in (200, 204, 404):
-                # 200 = data exists; 204 = no data for the day (still a valid OK);
-                # 404 occasionally surfaces for orgs without any historical data;
-                # anything else (incl. 400) means the probe parameters or the
-                # connector environment are wrong.
+            if resp.status_code == 404:
+                return False, (
+                    f"Metrics reports endpoint returned HTTP 404 for org '{org}'. "
+                    "The org may not have the Copilot Metrics API enabled, or does not "
+                    "have an active Copilot subscription. "
+                    f"API response: {resp.text[:200]}"
+                )
+            if resp.status_code not in (200, 204):
+                # 200 = data exists; 204 = no data for the day (still a valid OK).
                 return False, (
                     f"Failed to probe metrics endpoint for org '{org}' (HTTP "
                     f"{resp.status_code}): {resp.text[:200]}"
