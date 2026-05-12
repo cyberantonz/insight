@@ -14,8 +14,8 @@
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
   - [Lowercase on write and on lookup (chosen)](#lowercase-on-write-and-on-lookup-chosen)
-  - [Switch collation to `utf8mb4_general_ci`](#switch-collation-to-utf8mb4generalci)
-  - [`LOWER(value_id) = LOWER(@email)`](#lowervalueid--loweremail)
+  - [Switch collation to case-insensitive](#switch-collation-to-case-insensitive)
+  - [Wrap lookup with LOWER on both sides](#wrap-lookup-with-lower-on-both-sides)
 - [More Information](#more-information)
 - [Traceability](#traceability)
 
@@ -84,16 +84,17 @@ returns the assembled record.
 - Bad, because original casing is lost on `value_id`. Recoverable from
   `display_name` when needed.
 
-### Switch collation to `utf8mb4_general_ci`
+### Switch collation to case-insensitive
 
 - Good, because no writer-side discipline required.
-- Bad, because case-insensitive collations have measurably slower
-  equality on long strings and disable some plan optimisations.
-- Bad, because `utf8mb4_general_ci` is not Unicode-correct for
-  non-ASCII case mapping; `_unicode_ci` is the modern choice but is
-  even slower.
+- Bad, because case-insensitive collations (utf8mb4-general-ci, or the
+  Unicode-correct utf8mb4-unicode-ci) have measurably slower equality
+  on long strings and disable some plan optimisations.
+- Bad, because utf8mb4-general-ci is not Unicode-correct for
+  non-ASCII case mapping; utf8mb4-unicode-ci is the modern choice but
+  is even slower.
 
-### `LOWER(value_id) = LOWER(@email)`
+### Wrap lookup with LOWER on both sides
 
 - Good, because no writer-side discipline required.
 - Bad, because the predicate is non-SARG-able — every row in the

@@ -14,7 +14,7 @@
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
   - [Latest-per-source (chosen)](#latest-per-source-chosen)
-  - [Latest-per-(tenant, person, value_type)](#latest-per-tenant-person-valuetype)
+  - [Latest-per-(tenant, person, attribute)](#latest-per-tenant-person-attribute)
 - [More Information](#more-information)
 - [Traceability](#traceability)
 
@@ -44,7 +44,7 @@ most recent row per source first and collapse across sources second.
 
 ## Considered Options
 
-- Latest-per-(tenant, person, value_type) — collapse across sources
+- Latest-per-(tenant, person, attribute) — collapse across sources
   first, then pick the most recent row.
 - Latest-per-source per (tenant, person, source_type, source_id,
   value_type) — pick the most recent row per source, then collapse
@@ -91,7 +91,7 @@ person it used to bind.
 - Bad, because the lookup query is a CTE with a window function —
   slightly more complex than a `GROUP BY` collapse.
 
-### Latest-per-(tenant, person, value_type)
+### Latest-per-(tenant, person, attribute)
 
 - Good, because the SQL is simpler — `MAX(created_at)` and a join.
 - Bad, because conflict information is lost before the assembler sees

@@ -13,8 +13,8 @@
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Read MariaDB `persons` exclusively (chosen)](#read-mariadb-persons-exclusively-chosen)
-  - [Read ClickHouse `bronze_bamboohr.employees` directly](#read-clickhouse-bronzebamboohremployees-directly)
+  - [Read MariaDB persons exclusively (chosen)](#read-mariadb-persons-exclusively-chosen)
+  - [Read ClickHouse bronze BambooHR employees directly](#read-clickhouse-bronze-bamboohr-employees-directly)
   - [Read both — MariaDB primary, ClickHouse fallback](#read-both--mariadb-primary-clickhouse-fallback)
 - [More Information](#more-information)
 - [Traceability](#traceability)
@@ -43,8 +43,8 @@ does not depend on ClickHouse availability for synchronous lookups.
 
 ## Considered Options
 
-- Read MariaDB `persons` exclusively.
-- Read ClickHouse `bronze_bamboohr.employees` directly.
+- Read MariaDB persons exclusively.
+- Read ClickHouse bronze BambooHR employees directly.
 - Read both — MariaDB as primary, ClickHouse as fallback.
 
 ## Decision Outcome
@@ -74,7 +74,7 @@ is enforced at build time.
 
 ## Pros and Cons of the Options
 
-### Read MariaDB `persons` exclusively (chosen)
+### Read MariaDB persons exclusively (chosen)
 
 - Good, because the seed pipeline already unifies every connector
   behind `persons`.
@@ -85,7 +85,7 @@ is enforced at build time.
 - Bad, because lookups against a fresh cluster return 404 until the
   operator runs the seed.
 
-### Read ClickHouse `bronze_bamboohr.employees` directly
+### Read ClickHouse bronze BambooHR employees directly
 
 - Good, because the data is already there in bronze for the legacy
   Rust stub.
