@@ -5,7 +5,7 @@
     engine='ReplacingMergeTree(_version)',
     order_by='(unique_key)',
     settings={'allow_nullable_key': 1},
-    tags=['zoom', 'silver:class_collab_meeting_activity']
+    tags=['zoom']
 ) }}
 
 -- Zoom meeting-session stitching (issue #258) — extracted into its own
