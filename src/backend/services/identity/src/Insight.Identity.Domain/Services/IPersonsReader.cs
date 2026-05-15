@@ -36,4 +36,48 @@ public interface IPersonsReader
         Guid tenantId,
         Guid parentPersonId,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Phase 1 of cyberfabric/cyber-insight#348: current parent edges
+    /// for <paramref name="childPersonId"/> across all source instances
+    /// within the tenant. Reads <c>person_parent_map</c> rows with
+    /// <c>valid_to IS NULL</c>; an empty list means the person has no
+    /// recorded parent in any source. Phase-1 invariant: at most one
+    /// CURRENT parent per (tenant, source_type, source_id, child), so
+    /// the list size equals the number of source instances that have
+    /// a current parent observation for this person.
+    /// </summary>
+    Task<IReadOnlyList<PersonParentEdge>> GetCurrentParentsAsync(
+        Guid tenantId,
+        Guid childPersonId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Phase 1 of cyberfabric/cyber-insight#348: current direct-children
+    /// edges where <paramref name="parentPersonId"/> is the parent.
+    /// Reads <c>person_parent_map</c> rows with <c>valid_to IS NULL</c>;
+    /// an empty list means no one currently reports to this person in
+    /// any source. The future Phase-2 subordinates expansion and the
+    /// Phase-3 <c>/v1/subchart/{person_id}?depth=N</c> recursive walk
+    /// both build on top of this query.
+    /// </summary>
+    Task<IReadOnlyList<PersonParentEdge>> GetCurrentChildrenAsync(
+        Guid tenantId,
+        Guid parentPersonId,
+        CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// One parent->child edge from <c>person_parent_map</c>, scoped to a
+/// single source instance. Phase 1 of cyberfabric/cyber-insight#348.
+/// The same person may appear as a <c>ChildPersonId</c> in multiple
+/// edges, one per source instance where the source emitted a parent
+/// observation for them; the edge granularity is therefore
+/// (tenant, source_type, source_id, child).
+/// </summary>
+public sealed record PersonParentEdge(
+    string InsightSourceType,
+    Guid InsightSourceId,
+    Guid ChildPersonId,
+    Guid ParentPersonId,
+    DateTime ValidFrom);
