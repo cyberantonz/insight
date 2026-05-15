@@ -40,16 +40,24 @@ public sealed class MariaDbFixture : IAsyncLifetime
     {
         await using var conn = new MySqlConnection(ConnectionString);
         await conn.OpenAsync().ConfigureAwait(false);
-        await using var cmd = new MySqlCommand("DELETE FROM persons", conn);
-        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        // `person_parent_map` references no tenant of its own — its rows
+        // are derived from persons by the seeder, so clearing both keeps
+        // each test starting from an empty graph regardless of what the
+        // previous test inserted.
+        await using (var cmd = new MySqlCommand("DELETE FROM person_parent_map", conn))
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        await using (var cmd = new MySqlCommand("DELETE FROM persons", conn))
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     private async Task ApplySchemaAsync()
     {
         await using var conn = new MySqlConnection(ConnectionString);
         await conn.OpenAsync().ConfigureAwait(false);
-        await using var cmd = new MySqlCommand(PersonsDdl, conn);
-        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        await using (var cmd = new MySqlCommand(PersonsDdl, conn))
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        await using (var cmd = new MySqlCommand(PersonParentMapDdl, conn))
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     private const string PersonsDdl = """
@@ -79,6 +87,38 @@ public sealed class MariaDbFixture : IAsyncLifetime
             INDEX idx_person_id (person_id),
             INDEX idx_tenant_person (insight_tenant_id, person_id),
             INDEX idx_source (insight_source_type, insight_source_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """;
+
+    // Mirror of Migrations/003_person_parent_map.sql. Kept inline here
+    // so the fixture stays self-contained (no DbUp at test start).
+    private const string PersonParentMapDdl = """
+        CREATE TABLE IF NOT EXISTS person_parent_map (
+            insight_tenant_id BINARY(16) NOT NULL,
+            insight_source_type VARCHAR(100) NOT NULL,
+            insight_source_id BINARY(16) NOT NULL,
+            child_person_id BINARY(16) NOT NULL,
+            parent_person_id BINARY(16) NOT NULL,
+            author_person_id BINARY(16) NOT NULL,
+            reason VARCHAR(50) NOT NULL,
+            valid_from TIMESTAMP(6) NOT NULL,
+            valid_to TIMESTAMP(6) NULL,
+            PRIMARY KEY (
+                insight_tenant_id, insight_source_type, insight_source_id,
+                child_person_id, valid_from
+            ),
+            CONSTRAINT chk_no_self_loop CHECK (child_person_id <> parent_person_id),
+            INDEX idx_current_parent (
+                insight_tenant_id, insight_source_type, insight_source_id,
+                child_person_id, valid_to
+            ),
+            INDEX idx_current_children (
+                insight_tenant_id, insight_source_type, insight_source_id,
+                parent_person_id, valid_to
+            ),
+            INDEX idx_child_any_source  (insight_tenant_id, child_person_id, valid_to),
+            INDEX idx_parent_any_source (insight_tenant_id, parent_person_id, valid_to),
+            INDEX idx_valid_from (insight_tenant_id, valid_from)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """;
 }
