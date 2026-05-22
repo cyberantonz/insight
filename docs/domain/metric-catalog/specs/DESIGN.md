@@ -53,7 +53,7 @@ The write path is tenant-admin CRUD over `metric_threshold` (5 endpoints under `
 | `cpt-metric-cat-fr-read-endpoint` | `POST /catalog/get_metrics` with JSON body `{ role_slug?, team_id? }`; returns catalog + resolved thresholds + `resolved_from`. |
 | `cpt-metric-cat-fr-cache` | Server-side cache (`CacheLayer` component); per-`(tenant, role, team)` key; 5-min default TTL; invalidated on admin write. |
 | `cpt-metric-cat-fr-threshold-crud` | `AdminCRUD` component owns 5 admin endpoints; enforces auth + DB CHECK + app-layer scope/sanity validation. |
-| `cpt-metric-cat-fr-threshold-lock` | `LockEnforcer` checks broader-scope locks on every write; emits `403 threshold_locked` with `{ blocking_scope, blocking_row_id, locked_at }`. |
+| `cpt-metric-cat-fr-threshold-lock` | `LockEnforcer` checks broader-scope locks on every write; emits a canonical `permission_denied` envelope (HTTP 403, `context.reason = "threshold_locked"`, `blocking_scope` / `blocking_row_id` / `locked_at`) per §3.3. |
 | `cpt-metric-cat-fr-threshold-lock-bypass-audit` | `AuditEmitter` writes to `threshold_lock_audit` and structured log on every lock-set / lock-cleared / bypass-attempt. |
 | `cpt-metric-cat-fr-metadata-writes` | No runtime metadata endpoint; metadata changes ship via sea-orm migration only. |
 | `cpt-metric-cat-fr-seed-from-frontend` | `SeedMigration` imports `BULLET_DEFS`, `IC_KPI_DEFS`, `METRIC_KEYS` into `metric_catalog` + one `product-default` row per metric. |
@@ -131,7 +131,7 @@ Every constraint is enforced at **both** the DB layer (CHECK in migration DDL) a
 
 - [ ] `p2` - **ID**: `cpt-metric-cat-principle-lock-audit`
 
-Locks bound the resolver walk (a locked broader-scope row stops the walk; narrower scopes are ignored). On the write side, `LockEnforcer` rejects attempts that would be shadowed by a broader lock with `403 threshold_locked` carrying `{ blocking_scope, blocking_row_id, locked_at }`. Every lock-set, lock-cleared, and bypass-attempt event lands in **both** the `threshold_lock_audit` table and the structured log stream — see `cpt-metric-cat-component-audit-emitter` for the dual-sink contract and `cpt-metric-cat-dbtable-threshold-lock-audit` for the canonical retention policy.
+Locks bound the resolver walk (a locked broader-scope row stops the walk; narrower scopes are ignored). On the write side, `LockEnforcer` rejects attempts that would be shadowed by a broader lock with a canonical `permission_denied` envelope (HTTP 403, `context.reason = "threshold_locked"`, plus `blocking_scope` / `blocking_row_id` / `locked_at`) per §3.3. Every lock-set, lock-cleared, and bypass-attempt event lands in **both** the `threshold_lock_audit` table and the structured log stream — see `cpt-metric-cat-component-audit-emitter` for the dual-sink contract and `cpt-metric-cat-dbtable-threshold-lock-audit` for the canonical retention policy.
 
 **ADRs**: _no ADRs in v1; rationale lives in PRD §5.4 and v1.8 changelog._
 
@@ -458,8 +458,8 @@ Owns the 5 tenant-admin endpoints under `/v1/admin/metric-thresholds` and the va
 - The list endpoint derives `tenant_id` strictly from the authenticated session; `tenant_id` is NOT an accepted filter parameter (cross-tenant disclosure surface). Allowed filters in v1: `metric_id`, `scope`, `role_slug`, `team_id`.
 - Authorize the caller as tenant-admin for the target tenant via `cpt-metric-cat-component-auth-trait`.
 - Validate referential integrity (`metric_key` exists in `metric_catalog`, `is_enabled = true`), scope-shape (right `role_slug` / `team_id` sentinel for declared `scope`), sanity bounds (e.g., `warn` not crossing `good` in the wrong direction relative to `higher_is_better`), and field-length caps (`lock_reason ≤ 512`).
-- Reject PUTs that mutate `scope`, `role_slug`, or `team_id` with `409 immutable_field { fields: [...] }` — re-scoping is DELETE + POST. Closes the lock-escalation path where a `team` row is rewritten to `tenant` while flipping `is_locked = true`.
-- Map every DB CHECK violation to a named 4xx error (e.g., CHECK `is_locked = false OR lock_reason IS NOT NULL` → `400 lock_reason_required`; lock-scope CHECK → `400 lock_scope_invalid`; immutable-field violation surfaced via app-layer but the DB CHECK is the backstop). A bare SeaORM CHECK error MUST NOT surface as a 500.
+- Reject PUTs that mutate `scope`, `role_slug`, or `team_id` with `400 failed_precondition` carrying a `precondition_violations` entry per offending field (`type: "immutable_field"`). Re-scoping is DELETE + POST. Closes the lock-escalation path where a `team` row is rewritten to `tenant` while flipping `is_locked = true`.
+- Map every DB CHECK violation to the appropriate canonical category from the §3.3 error envelope: missing `lock_reason` → `failed_precondition` (type `lock_reason_required`); scope-shape / sanity-bound / `metric_key` unknown → `invalid_argument` with `field_violations`; v1 lock-scope CHECK → `failed_precondition` (type `lock_scope_invalid`). A bare SeaORM CHECK error MUST NOT surface as a 500 — every CHECK has a named mapper in admin-crud.
 - Invoke `cpt-metric-cat-component-lock-enforcer` before any create/update/delete on `metric_threshold`.
 - On success, write the row via SeaORM and then `cpt-metric-cat-component-cache-layer.invalidate(tenant_id)`.
 - On a successful lock-set / lock-cleared transition, hand off to `cpt-metric-cat-component-audit-emitter`.
@@ -485,15 +485,15 @@ Owns the 5 tenant-admin endpoints under `/v1/admin/metric-thresholds` and the va
 
 ##### Why this component exists
 
-Single point of decision for whether an admin write at scope `S` would be shadowed by a locked row at a broader scope per `cpt-metric-cat-fr-threshold-lock`. Rejects the request with `403 threshold_locked` and a structured error body, and triggers the `bypass_attempt` audit so the rejection is recoverable for compliance review.
+Single point of decision for whether an admin write at scope `S` would be shadowed by a locked row at a broader scope per `cpt-metric-cat-fr-threshold-lock`. Rejects the request with a canonical `permission_denied` envelope (HTTP 403, `context.reason = "threshold_locked"`, plus `blocking_scope` / `blocking_row_id` / `locked_at`) per §3.3, and triggers the `bypass_attempt` audit so the rejection is recoverable for compliance review.
 
 ##### Responsibility scope
 
 - On any pre-write check for a `(tenant, metric_key, scope, role_slug, team_id)` target, look up locked rows at broader scopes that would shadow the target during resolution.
-- If a blocking lock exists and the caller lacks override authority, reject with `403 threshold_locked` carrying `{ blocking_scope, blocking_row_id, locked_at }`.
+- If a blocking lock exists and the caller lacks override authority, reject with a canonical `permission_denied` envelope per §3.3 — `context.reason = "threshold_locked"`, `blocking_scope`, `blocking_row_id`, `locked_at`.
 - If a blocking lock exists, instruct `cpt-metric-cat-component-audit-emitter` to record a `bypass_attempt` with `actor_subject`, `attempted_scope`, `attempted_values`, and the blocking row's identifiers.
-- Enforce v1 lock-scope restriction (`is_locked = true` only allowed on `product-default` / `tenant`); reject `role` / `team` / `team+role` lock attempts with `400`.
-- Enforce `lock_reason` presence on lock-set; reject missing reasons with `400` `lock_reason_required`.
+- Enforce v1 lock-scope restriction (`is_locked = true` only allowed on `product-default` / `tenant`); reject `role` / `team` / `team+role` lock attempts with `failed_precondition` (type `lock_scope_invalid`).
+- Enforce `lock_reason` presence on lock-set; reject missing reasons with `failed_precondition` (type `lock_reason_required`).
 
 ##### Responsibility boundaries
 
@@ -519,7 +519,7 @@ Sole writer of `threshold_lock_audit` rows and the corresponding structured log 
 
 - Accept three event kinds: `lock_set`, `lock_cleared`, `bypass_attempt`.
 - Treat the `threshold_lock_audit` row as the **primary sink**: it MUST commit before the caller's response (200 for lock-set/cleared; 403 for bypass-attempt) is returned. The structured log is a **derived async stream** with bounded retry + dead-letter; a log-sink failure is observable (metric + alarm) but does not roll back the row commit.
-- For `lock_set` / `lock_cleared`, the audit-row INSERT happens inside admin-crud's threshold-write transaction — both commit atomically. For `bypass_attempt`, the audit-row INSERT is its own short transaction that MUST commit before the 403 response; if the INSERT fails, the caller receives `503 audit_unavailable` (retryable) rather than a 403 with a missing audit trail. This closes the "audit gap = silent bypass" risk.
+- For `lock_set` / `lock_cleared`, the audit-row INSERT happens inside admin-crud's threshold-write transaction — both commit atomically. For `bypass_attempt`, the audit-row INSERT is its own short transaction that MUST commit before the 403 response; if the INSERT fails, the caller receives a canonical `service_unavailable` envelope (HTTP 503, `context.reason = "audit_unavailable"`, `retry_after_seconds`) instead of a 403 with a missing audit trail. This closes the "audit gap = silent bypass" risk.
 - Emit a metric (`audit.log_sink.failure_total`) on every structured-log emit failure so the operator sees degraded mode.
 
 ##### Responsibility boundaries
@@ -623,6 +623,44 @@ Owns the one-shot import of frontend-hardcoded metadata (`BULLET_DEFS`, `IC_KPI_
 
 ### 3.3 API Contracts
 
+#### Error Envelope (applies to every endpoint in §3.3)
+
+Every 4xx / 5xx response across `POST /catalog/get_metrics` and `/v1/admin/metric-thresholds/*` is an **RFC 9457 Problem Details** payload served with `Content-Type: application/problem+json`. The catalog follows the cyberfabric canonical error contract (DNA `REST/API.md §7` + `REST/STATUS_CODES.md`) implemented by the `modkit-canonical-errors` Rust crate. Per-handler error mapping uses the crate's `CanonicalError` enum and its `#[resource_error("gts.cf.insight.metric_catalog.<resource>.v1~")]` macro to scope context to the metric-catalog domain.
+
+**Envelope shape**:
+
+```json
+{
+  "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.<category>.v1~",
+  "title": "<canonical title>",
+  "status": <http_status>,
+  "detail": "<client-safe message>",
+  "instance": "<optional request URI>",
+  "trace_id": "<optional trace id>",
+  "context": { /* category-specific structured details */ }
+}
+```
+
+Fields `type`, `title`, `status`, `detail`, `context` are always present; `instance` and `trace_id` are optional and SHOULD be populated when available. **`detail` is client-safe text only** — internal exception messages, stack traces, raw SeaORM errors, and raw ClickHouse error text MUST be redacted out of `detail` (they go to the structured log instead).
+
+**Canonical categories this DESIGN uses** (mappings from `modkit-canonical-errors::CanonicalError::status_code`):
+
+| Category | HTTP | Context shape | Used by this DESIGN for … |
+|---|---|---|---|
+| `invalid_argument` | 400 | `{ field_violations: [{ field, description, reason }] }` | Scope-shape mismatch, sanity-bound violation, unknown / disabled `metric_key`, `lock_reason` length / format. |
+| `failed_precondition` | 400 | `{ precondition_violations: [{ type, subject, description }] }` | `is_locked = true` without `lock_reason`; PUT mutating immutable fields (`scope` / `role_slug` / `team_id`). |
+| `unauthenticated` | 401 | `{ reason }` | Missing / invalid bearer token. |
+| `permission_denied` | 403 | `{ reason, ...additional }` | Tenant-admin authorization failure; threshold-locked rejection (with `blocking_scope`, `blocking_row_id`, `locked_at` added). |
+| `not_found` | 404 | `{ resource_type, resource_name }` | Threshold row by `id` not found; `metric_key` not in catalog. |
+| `service_unavailable` | 503 | `{ retry_after_seconds? }` | Audit-primary-sink commit failed before a `bypass_attempt` response could be returned. |
+| `internal` | 500 | `{}` (no internals) | Unexpected fault; details stay in the log. |
+
+**Resource GTS namespaces** introduced for the catalog (consumed by `#[resource_error]` in the crate, surfaced in `context.resource_type`):
+
+- `gts.cf.insight.metric_catalog.metric.v1~` — a row in `metric_catalog`.
+- `gts.cf.insight.metric_catalog.threshold.v1~` — a row in `metric_threshold`.
+- `gts.cf.insight.metric_catalog.audit_event.v1~` — a row in `threshold_lock_audit`.
+
 #### Catalog Read
 
 - **References**: `cpt-metric-cat-interface-read` (defined in PRD §7.1)
@@ -663,13 +701,41 @@ Owns the one-shot import of frontend-hardcoded metadata (`BULLET_DEFS`, `IC_KPI_
 
 **Authentication / CSRF model**: admin endpoints accept **bearer tokens only** (`Authorization: Bearer …`); cookie-based auth is NOT honored on this surface. Combined with the `Content-Type: application/json` requirement (form encodings are rejected with 415), this eliminates the cross-site-request-forgery vector — no in-browser cross-origin form post can reach the admin write surface. The read endpoint (`POST /catalog/get_metrics`) follows the same bearer-only convention.
 
-**Error contract (model-level)**:
-- `400 lock_reason_required` — `is_locked = true` without `lock_reason`.
-- `400 lock_reason_format` — `lock_reason` longer than 512 chars or otherwise malformed. The admin UI MUST forbid free-form secrets / PII; the recommended convention is a ticket-ID prefix (e.g., `TICKET-7421: compliance pin`) since `lock_reason` lands in three sinks (row + audit table + log stream) with ≥ 1y retention.
-- `400` — scope-shape mismatch (wrong `role_slug` / `team_id` sentinel for declared `scope`), sanity-bound violation, or unknown / disabled `metric_key`.
-- `403 threshold_locked` with body `{ blocking_scope, blocking_row_id, locked_at }` — write would be shadowed by a broader-scope locked row per `cpt-metric-cat-fr-threshold-lock`. The same rejection emits a `bypass_attempt` audit event via `cpt-metric-cat-component-audit-emitter`.
-- `409 immutable_field { fields: [...] }` — PUT attempted to change `scope`, `role_slug`, or `team_id`. Re-scoping requires DELETE + POST.
-- `503 audit_unavailable` — the audit-primary-sink (`threshold_lock_audit`) commit failed before a `bypass_attempt`. Caller SHOULD retry; the catalog refuses to return 403 without a recorded audit row.
+**Error contract (model-level)** — all responses follow the canonical envelope defined at the top of §3.3. Status / category / context for each catalog-specific failure:
+
+- **400 `invalid_argument`** — scope-shape mismatch (wrong `role_slug` / `team_id` sentinel for declared `scope`), sanity-bound violation (e.g., `warn` crossing `good` against `higher_is_better`), unknown / disabled `metric_key`, or `lock_reason` length / format violation. `context.field_violations` carries one entry per violation, e.g.
+  ```json
+  { "context": { "resource_type": "gts.cf.insight.metric_catalog.threshold.v1~",
+                 "field_violations": [
+                   { "field": "lock_reason", "description": "must be ≤ 512 chars", "reason": "OUT_OF_RANGE" }
+                 ] } }
+  ```
+  The admin UI MUST forbid free-form secrets / PII in `lock_reason`; the recommended convention is a ticket-ID prefix (e.g., `TICKET-7421: compliance pin`) since `lock_reason` lands in three sinks (row + audit table + log stream) with ≥ 1y retention.
+- **400 `failed_precondition`** — `is_locked = true` submitted without `lock_reason`, OR PUT attempted to mutate immutable fields (`scope`, `role_slug`, `team_id`). `context.precondition_violations` carries one entry per blocker, e.g.
+  ```json
+  { "context": { "resource_type": "gts.cf.insight.metric_catalog.threshold.v1~",
+                 "precondition_violations": [
+                   { "type": "lock_reason_required", "subject": "lock_reason",
+                     "description": "lock_reason must be set when is_locked = true" }
+                 ] } }
+  ```
+  For an immutable-field PUT the `type` is `immutable_field` and `subject` is the offending column. Re-scoping requires DELETE + POST.
+- **401 `unauthenticated`** — missing / invalid bearer token (no auth header, expired token, or wrong audience).
+- **403 `permission_denied`** — two sub-cases differentiated by `context.reason`:
+  1. `reason = "not_tenant_admin"` — caller is authenticated but lacks tenant-admin authorization for the target tenant (returned by `cpt-metric-cat-component-auth-trait`). Cross-tenant write attempts also resolve here.
+  2. `reason = "threshold_locked"` — write would be shadowed by a broader-scope locked row per `cpt-metric-cat-fr-threshold-lock`. `context` adds `blocking_scope`, `blocking_row_id` (UUID), and `locked_at`. The same rejection emits a `bypass_attempt` audit event via `cpt-metric-cat-component-audit-emitter`. Example:
+  ```json
+  { "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.permission_denied.v1~",
+    "status": 403, "title": "Permission Denied",
+    "detail": "Threshold is locked by a broader scope.",
+    "context": { "resource_type": "gts.cf.insight.metric_catalog.threshold.v1~",
+                 "reason": "threshold_locked",
+                 "blocking_scope": "tenant",
+                 "blocking_row_id": "0190abe0-...",
+                 "locked_at": "2026-05-12T14:02:11Z" } }
+  ```
+- **404 `not_found`** — threshold row by `id` not found, or `metric_key` resolves to no `metric_catalog` row. `context = { resource_type, resource_name }`.
+- **503 `service_unavailable`** — the audit-primary-sink (`threshold_lock_audit`) INSERT failed before a `bypass_attempt` response could be returned (see §3.6 lock-bypass sequence). Returned in place of the 403 so the caller retries and the audit eventually lands; `context = { reason: "audit_unavailable", retry_after_seconds }`.
 
 **Cache invalidation**: every successful 2xx response from POST / PUT / DELETE triggers `cpt-metric-cat-component-cache-layer.invalidate(tenant_id)` so the next read on any replica reflects the change within `cpt-metric-cat-nfr-write-visibility` and `cpt-metric-cat-nfr-cross-replica-invalidation`.
 
@@ -713,6 +779,7 @@ All nine components live inside the `analytics-api` crate; the catalog has no in
 | Cache backend (Redis OR in-process LRU + pub-sub) | `CacheLayer` trait (`cpt-metric-cat-component-cache-layer`) | Server-side cache for `POST /catalog/get_metrics` and the carrier of cross-replica invalidation; concrete mechanism is `cpt-metric-cat-design-oq-cache-mechanism`. |
 | `analytics.metrics` table | Read-only (loose pointer) | Holds the existing `query_ref` rows; `metric_catalog.metric_key` aligns loosely with the metric keys it emits. No FK; opacity preserved per PRD §1.1 layer boundary. |
 | ClickHouse `system.columns` | Read-only schema introspection | Used by `cpt-metric-cat-component-schema-validator` to confirm each metric's `table.column` reference exists; result is cached on `metric_catalog.schema_status` so reads never hit ClickHouse on the request path. |
+| `modkit-canonical-errors` (cyberfabric-core Rust crate) | `CanonicalError` enum + RFC 9457 `Problem` serializer + `#[resource_error]` macro | Every 4xx / 5xx response across catalog endpoints is constructed through this crate per the §3.3 error envelope. Aligns the catalog's wire shape with DNA `REST/API.md §7` and other cyberfabric services so a shared client error handler works across the platform. |
 
 **Dependency Rules** (per project conventions):
 
@@ -796,16 +863,16 @@ sequenceDiagram
     AuditEmitter ->> MariaDB: INSERT threshold_lock_audit (primary sink, MUST commit)
     alt audit INSERT fails
         AuditEmitter -->> LockEnforcer: error
-        LockEnforcer -->> AdminCRUD: 503 audit_unavailable
-        AdminCRUD -->> TenantAdmin: 503 audit_unavailable (retryable)
+        LockEnforcer -->> AdminCRUD: service_unavailable
+        AdminCRUD -->> TenantAdmin: 503 service_unavailable {reason: "audit_unavailable", retry_after_seconds} (Problem+JSON)
     else audit INSERT succeeds
         AuditEmitter -)>> StructuredLog: async event (best-effort; on failure → metric + dead-letter)
         LockEnforcer -->> AdminCRUD: blocked
-        AdminCRUD -->> TenantAdmin: 403 threshold_locked {blocking_scope, blocking_row_id, locked_at}
+        AdminCRUD -->> TenantAdmin: 403 permission_denied {reason: "threshold_locked", blocking_scope, blocking_row_id, locked_at} (Problem+JSON)
     end
 ```
 
-**Description**: The narrower-scope write is rejected before any state mutates. The `threshold_lock_audit` row is the **primary sink** and MUST commit before the 403 is returned — if the INSERT fails, the caller gets `503 audit_unavailable` and retries (no silent bypass). The structured log emit is an async derived stream; a log-sink failure observably degrades (metric + dead-letter) but does not roll back the 403. Together these satisfy `cpt-metric-cat-principle-lock-audit` without the "transactional dual sink" handwave.
+**Description**: The narrower-scope write is rejected before any state mutates. The `threshold_lock_audit` row is the **primary sink** and MUST commit before the 403 is returned — if the INSERT fails, the caller gets a canonical `service_unavailable` envelope and retries (no silent bypass). The structured log emit is an async derived stream; a log-sink failure observably degrades (metric + dead-letter) but does not roll back the 403. Both responses follow the §3.3 RFC 9457 envelope with category-specific `context`. Together these satisfy `cpt-metric-cat-principle-lock-audit` without the "transactional dual sink" handwave.
 
 #### Seed Migration — New Metric Lands
 
@@ -951,7 +1018,7 @@ The catalog owns three MariaDB tables. v1 invariants are enforced at both the DB
 - CHECK `is_locked = false OR scope IN ('product-default','tenant')` — v1 lock-scope restriction.
 - CHECK `length(lock_reason) <= 512`.
 - CHECK scope-shape: `role_slug != ''` for `role` / `team+role`, otherwise `= ''`; `team_id != ''` for `team` / `team+role`, otherwise `= ''`.
-- `scope`, `role_slug`, `team_id` are immutable post-create: `cpt-metric-cat-component-admin-crud` rejects PUTs that change them with `409 immutable_field` (a re-scope requires DELETE + POST). Prevents the lock-escalation path where a narrow row is rewritten to a broader scope.
+- `scope`, `role_slug`, `team_id` are immutable post-create: `cpt-metric-cat-component-admin-crud` rejects PUTs that change them with a canonical `failed_precondition` envelope (HTTP 400, `precondition_violations` entry per offending field with `type = "immutable_field"`) per §3.3. A re-scope requires DELETE + POST. Prevents the lock-escalation path where a narrow row is rewritten to a broader scope.
 - Mirrored at the application layer (`cpt-metric-cat-component-admin-crud`) with structured error mapping per CHECK — each CHECK has a named app-layer error code so a CHECK violation never surfaces as a generic 500.
 
 **Indexes**:
