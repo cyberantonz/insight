@@ -49,4 +49,38 @@ internal static class SqlVisibility
         )
         SELECT EXISTS (SELECT 1 FROM visible_set WHERE person_id = @target_person_id)
         """;
+
+    private const string ColumnList =
+        "visibility_id, insight_tenant_id, viewer_person_id, viewed_person_id, " +
+        "valid_from, valid_to, author_person_id, reason, created_at";
+
+    public const string GetById = $"""
+        SELECT {ColumnList}
+        FROM visibility
+        WHERE visibility_id = @visibility_id
+        LIMIT 1
+        """;
+
+    public const string ListBase = $"""
+        SELECT {ColumnList}
+        FROM visibility
+        WHERE insight_tenant_id = @tenant_id
+        """;
+
+    public const string Insert = """
+        INSERT INTO visibility
+            (visibility_id, insight_tenant_id, viewer_person_id, viewed_person_id,
+             valid_from, valid_to, author_person_id, reason)
+        VALUES
+            (@visibility_id, @tenant_id, @viewer_person_id, @viewed_person_id,
+             IFNULL(@valid_from, UTC_TIMESTAMP(6)), NULL, @author_person_id, @reason)
+        """;
+
+    public const string SoftDelete = """
+        UPDATE visibility
+        SET valid_to = UTC_TIMESTAMP(6),
+            reason   = COALESCE(@reason, reason)
+        WHERE visibility_id = @visibility_id
+          AND valid_to IS NULL
+        """;
 }

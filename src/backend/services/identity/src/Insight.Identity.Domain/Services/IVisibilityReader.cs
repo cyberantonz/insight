@@ -16,7 +16,7 @@ public interface IVisibilityReader
     /// visibility CTE uses as its seed set together with the viewer's
     /// own <c>person_id</c>.
     /// </summary>
-    Task<IReadOnlyList<Visibility>> GetActiveGrantsByViewerAsync(
+    Task<IReadOnlyList<Visibility>> GetActiveVisibilityGrantsByViewerAsync(
         Guid tenantId,
         Guid viewerPersonId,
         CancellationToken cancellationToken);
@@ -35,6 +35,23 @@ public interface IVisibilityReader
         Guid viewerPersonId,
         Guid targetPersonId,
         string orgChartSourceType,
+        CancellationToken cancellationToken);
+
+    /// <summary>One row by <c>visibility_id</c>, or <c>null</c>.</summary>
+    Task<Visibility?> GetByIdAsync(Guid visibilityId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Paged list of visibility rows in a tenant, newest first. Use
+    /// <paramref name="filterByViewer"/> / <paramref name="filterByViewed"/>
+    /// for the canonical "list grants for X" queries; <paramref name="activeOnly"/>
+    /// restricts to <c>valid_to IS NULL</c>.
+    /// </summary>
+    Task<PagedResult<Visibility>> ListAsync(
+        Guid tenantId,
+        Guid? filterByViewer,
+        Guid? filterByViewed,
+        bool activeOnly,
+        PageRequest page,
         CancellationToken cancellationToken);
 }
 

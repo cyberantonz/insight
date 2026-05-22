@@ -222,6 +222,9 @@ app.UseExceptionHandler(handler =>
 app.UseAuthentication();
 
 app.MapPersonsEndpoints();
+app.MapVisibilityEndpoints();
+app.MapRoleEndpoints();
+app.MapPersonRoleEndpoints();
 
 await app.RunAsync().ConfigureAwait(false);
 

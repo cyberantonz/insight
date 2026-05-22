@@ -73,7 +73,7 @@ public sealed class MariaDbFixture : IAsyncLifetime
             await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
         await using (var cmd = new MySqlCommand("DELETE FROM persons", conn))
             await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
-        // #346 step-1 RBAC tables. `roles` is mostly NOT cleared — the
+        // #346 step-1 OrgChart Visibility tables. `roles` is mostly NOT cleared — the
         // admin seed row is part of the schema-bootstrap contract and
         // every test depends on it being there — but any ad-hoc role a
         // multi-role test inserts is wiped so it doesn't bleed into
