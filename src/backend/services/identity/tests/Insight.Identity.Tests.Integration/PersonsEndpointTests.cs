@@ -106,9 +106,11 @@ public sealed class PersonsEndpointTests : IAsyncLifetime
     private static string BuildUnverifiedJwt(Guid tenantId)
     {
         // Hand-crafted token: parse-only middleware ignores the signature
-        // segment so we can omit a real signing key. `alg=HS256` keeps the
-        // header shape conventional; the empty third segment is the unset
-        // signature.
+        // segment so we can omit a real signing key. `alg=HS256` keeps
+        // the header shape conventional; the third segment is a
+        // non-empty placeholder (`AAAA`) — `JsonWebToken` requires three
+        // dot-separated segments and tolerates an opaque signature when
+        // the SignatureValidator short-circuits.
         static string B64Url(string raw)
         {
             var bytes = System.Text.Encoding.UTF8.GetBytes(raw);

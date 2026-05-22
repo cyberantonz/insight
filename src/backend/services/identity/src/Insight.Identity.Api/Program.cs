@@ -82,7 +82,11 @@ builder.Services.AddSingleton<ITenantContext>(sp => new CompositeTenantContext(n
 // still pass through unchanged.
 //
 // TODO(#346): switch to full validation once the IdP authority is
-// pinned per environment. The block below is the swap-in skeleton:
+// pinned per environment. The block below is the swap-in skeleton —
+// every line must flip together. The `SignatureValidator = null` line
+// is load-bearing: without it the no-op below keeps short-circuiting
+// signature checks even with `ValidateIssuerSigningKey = true`, which
+// would also silently accept `alg=none` tokens.
 //     options.Authority = configuration["identity:auth_authority"];
 //     options.Audience  = configuration["identity:auth_audience"];
 //     options.TokenValidationParameters.ValidateIssuer            = true;
@@ -90,7 +94,7 @@ builder.Services.AddSingleton<ITenantContext>(sp => new CompositeTenantContext(n
 //     options.TokenValidationParameters.ValidateLifetime          = true;
 //     options.TokenValidationParameters.ValidateIssuerSigningKey  = true;
 //     options.TokenValidationParameters.RequireSignedTokens       = true;
-//     // and drop the no-op SignatureValidator below.
+//     options.TokenValidationParameters.SignatureValidator        = null;
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
