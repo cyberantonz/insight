@@ -52,10 +52,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
         var client = _app!.CreateClient();
 
         var body = new ResolveProfileCommandModel("email", "alice@example.com", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         await ShouldSucceedAsync(response).ConfigureAwait(false);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("person_id").GetGuid().Should().Be(AlicePersonId);
         doc.GetProperty("insight_tenant_id").GetGuid().Should().Be(TenantId);
@@ -78,7 +78,7 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
         var client = _app!.CreateClient();
 
         var body = new ResolveProfileCommandModel("email", "Alice@Example.COM", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -98,10 +98,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
             InsightSourceType: "bamboohr",
             InsightSourceId: BambooSourceId);
 
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         await ShouldSucceedAsync(response).ConfigureAwait(false);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("person_id").GetGuid().Should().Be(AlicePersonId);
     }
@@ -113,10 +113,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
     {
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "nobody@example.com", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:person_not_found");
     }
 
@@ -127,7 +127,7 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel(
             "id", "no-such-id", "bamboohr", BambooSourceId);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
@@ -148,7 +148,7 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
 
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "alice@example.com", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
@@ -171,11 +171,11 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
 
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "shared@example.com", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
 
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:ambiguous_profile");
         var personIds = doc.GetProperty("person_ids").EnumerateArray().Select(e => e.GetGuid()).ToArray();
         personIds.Should().BeEquivalentTo([AlicePersonId, SecondPersonId]);
@@ -188,10 +188,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
     {
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel(null, "x", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:invalid_value_type");
     }
 
@@ -200,10 +200,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
     {
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("id", "12345", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:missing_source_for_id");
     }
 
@@ -212,10 +212,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
     {
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "alice@x.com", "bamboohr", BambooSourceId);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:source_not_allowed_for_email");
     }
 
@@ -228,10 +228,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
         client.DefaultRequestHeaders.Remove(HeaderTenantContext.HeaderName);
 
         var body = new ResolveProfileCommandModel("email", "alice@x.com", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:tenant_unresolved");
     }
 
@@ -243,10 +243,10 @@ public sealed class ProfilesEndpointTests : IAsyncLifetime
         var client = noCallerApp.CreateClient();
 
         var body = new ResolveProfileCommandModel("email", "alice@x.com", null, null);
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:caller_unresolved");
     }
 

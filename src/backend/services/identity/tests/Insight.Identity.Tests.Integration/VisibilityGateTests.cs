@@ -187,7 +187,7 @@ public sealed class VisibilityGateTests : IAsyncLifetime
         var client = app.CreateClient();
         var body = new ResolveProfileCommandModel("email", "alice@example.com", null, null);
 
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         // Outsider has no visibility — must look exactly like
         // "no current observation matches" so existence doesn't leak.

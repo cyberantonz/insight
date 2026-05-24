@@ -133,6 +133,18 @@ builder.Services.AddSingleton<ICallerContext, HeaderCallerContext>();
 // /v1/roles, /v1/person-roles to gate by the `admin` role.
 builder.Services.AddSingleton<CallerAdminCheck>();
 
+// JSON wire convention: snake_case on every Minimal-API surface (request
+// body + response body). Lets DTOs in `Contracts/` declare plain PascalCase
+// properties and rely on the policy for serialisation — no per-property
+// `[JsonPropertyName]` attributes. Test clients deliberately use the same
+// policy via `JsonExtensions.PostJsonAsync` / `ReadJsonAsync` so wire-format
+// drift between server and tests is impossible.
+builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(o =>
+{
+    o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+    o.SerializerOptions.DictionaryKeyPolicy  = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+});
+
 builder.Services.AddRouting();
 
 var bindAddr = builder.Configuration[$"{AppOptions.SectionName}:bind_addr"]

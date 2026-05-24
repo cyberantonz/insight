@@ -56,7 +56,7 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
     {
         var client = _anonApp!.CreateClient();
         var body = new CreateVisibilityCommandModel(ViewerPersonId, ViewedPersonId, null, "test");
-        var response = await client.PostAsJsonAsync("/v1/visibility", body).ConfigureAwait(false);
+        var response = await client.PostJsonAsync("/v1/visibility", body).ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
@@ -65,9 +65,9 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
     {
         var client = _nonAdminApp!.CreateClient();
         var body = new CreateVisibilityCommandModel(ViewerPersonId, ViewedPersonId, null, "test");
-        var response = await client.PostAsJsonAsync("/v1/visibility", body).ConfigureAwait(false);
+        var response = await client.PostJsonAsync("/v1/visibility", body).ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:admin_required");
     }
 
@@ -80,9 +80,9 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
 
         // POST
         var body = new CreateVisibilityCommandModel(ViewerPersonId, ViewedPersonId, null, "scoped grant");
-        var post = await client.PostAsJsonAsync("/v1/visibility", body).ConfigureAwait(false);
+        var post = await client.PostJsonAsync("/v1/visibility", body).ConfigureAwait(false);
         post.StatusCode.Should().Be(HttpStatusCode.Created);
-        var created = await post.Content.ReadFromJsonAsync<VisibilityResponse>().ConfigureAwait(false);
+        var created = await post.ReadJsonAsync<VisibilityResponse>().ConfigureAwait(false);
         created!.ViewerPersonId.Should().Be(ViewerPersonId);
         created.ViewedPersonId.Should().Be(ViewedPersonId);
         created.Reason.Should().Be("scoped grant");
@@ -90,7 +90,7 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
         // GET list (filter by viewer)
         var list = await client.GetAsync($"/v1/visibility?viewer={ViewerPersonId:D}&active=true").ConfigureAwait(false);
         list.StatusCode.Should().Be(HttpStatusCode.OK);
-        var listDoc = await list.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var listDoc = await list.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         listDoc.GetProperty("items").EnumerateArray().Should().ContainSingle();
 
         // DELETE
@@ -99,7 +99,7 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
 
         // Now active=true returns empty
         var list2 = await client.GetAsync($"/v1/visibility?viewer={ViewerPersonId:D}&active=true").ConfigureAwait(false);
-        var list2Doc = await list2.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var list2Doc = await list2.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         list2Doc.GetProperty("items").EnumerateArray().Should().BeEmpty();
     }
 
@@ -116,9 +116,9 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
     {
         var client = _adminApp!.CreateClient();
         var body = new CreateVisibilityCommandModel(Guid.Empty, ViewedPersonId, null, null);
-        var post = await client.PostAsJsonAsync("/v1/visibility", body).ConfigureAwait(false);
+        var post = await client.PostJsonAsync("/v1/visibility", body).ConfigureAwait(false);
         post.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var doc = await post.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await post.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:invalid_viewer_person_id");
     }
 
@@ -130,7 +130,7 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
         var client = _adminApp!.CreateClient();
         var resp = await client.GetAsync("/v1/roles").ConfigureAwait(false);
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
-        var doc = await resp.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await resp.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         var items = doc.GetProperty("items").EnumerateArray()
             .Select(x => x.GetProperty("name").GetString()).ToList();
         items.Should().Contain("admin");
@@ -141,9 +141,9 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
     {
         var client = _adminApp!.CreateClient();
         var body = new CreateRoleCommandModel("auditor");
-        var post = await client.PostAsJsonAsync("/v1/roles", body).ConfigureAwait(false);
+        var post = await client.PostJsonAsync("/v1/roles", body).ConfigureAwait(false);
         post.StatusCode.Should().Be(HttpStatusCode.Created);
-        var created = await post.Content.ReadFromJsonAsync<RoleResponse>().ConfigureAwait(false);
+        var created = await post.ReadJsonAsync<RoleResponse>().ConfigureAwait(false);
         created!.Name.Should().Be("auditor");
 
         var del = await client.DeleteAsync($"/v1/roles/{created.RoleId:D}").ConfigureAwait(false);
@@ -155,9 +155,9 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
     {
         var client = _adminApp!.CreateClient();
         var body = new CreateRoleCommandModel("admin"); // already seeded
-        var post = await client.PostAsJsonAsync("/v1/roles", body).ConfigureAwait(false);
+        var post = await client.PostJsonAsync("/v1/roles", body).ConfigureAwait(false);
         post.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        var doc = await post.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await post.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:role_name_exists");
     }
 
@@ -168,7 +168,7 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
         var client = _adminApp!.CreateClient();
         var del = await client.DeleteAsync($"/v1/roles/{Roles.Admin:D}").ConfigureAwait(false);
         del.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
-        var doc = await del.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await del.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:role_in_use");
     }
 
@@ -179,15 +179,15 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
     {
         var client = _adminApp!.CreateClient();
         var body = new CreatePersonRoleCommandModel(NonAdminId, Roles.Admin, null, "promote");
-        var post = await client.PostAsJsonAsync("/v1/person-roles", body).ConfigureAwait(false);
+        var post = await client.PostJsonAsync("/v1/person-roles", body).ConfigureAwait(false);
         post.StatusCode.Should().Be(HttpStatusCode.Created);
-        var created = await post.Content.ReadFromJsonAsync<PersonRoleResponse>().ConfigureAwait(false);
+        var created = await post.ReadJsonAsync<PersonRoleResponse>().ConfigureAwait(false);
         created!.PersonId.Should().Be(NonAdminId);
         created.RoleId.Should().Be(Roles.Admin);
 
         var list = await client.GetAsync($"/v1/person-roles?person={NonAdminId:D}&active=true").ConfigureAwait(false);
         list.StatusCode.Should().Be(HttpStatusCode.OK);
-        var listDoc = await list.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var listDoc = await list.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         listDoc.GetProperty("items").EnumerateArray().Should().ContainSingle();
 
         var del = await client.DeleteAsync($"/v1/person-roles/{created.PersonRoleId:D}").ConfigureAwait(false);
@@ -199,7 +199,7 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
     {
         var client = _adminApp!.CreateClient();
         var body = new CreatePersonRoleCommandModel(Guid.Empty, Roles.Admin, null, null);
-        var post = await client.PostAsJsonAsync("/v1/person-roles", body).ConfigureAwait(false);
+        var post = await client.PostJsonAsync("/v1/person-roles", body).ConfigureAwait(false);
         post.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
@@ -213,14 +213,14 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
         var list = await client.GetAsync($"/v1/person-roles?person={AdminPersonId:D}&role={Roles.Admin:D}&active=true")
             .ConfigureAwait(false);
         list.StatusCode.Should().Be(HttpStatusCode.OK);
-        var listDoc = await list.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var listDoc = await list.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         var items = listDoc.GetProperty("items").EnumerateArray().ToArray();
         items.Should().ContainSingle("the fixture seeds exactly one admin row");
-        var personRoleId = items[0].GetProperty("personRoleId").GetGuid();
+        var personRoleId = items[0].GetProperty("person_role_id").GetGuid();
 
         var del = await client.DeleteAsync($"/v1/person-roles/{personRoleId:D}").ConfigureAwait(false);
         del.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
-        var doc = await del.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await del.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("type").GetString().Should().Be("urn:insight:error:last_admin_protected");
     }
 
@@ -231,14 +231,14 @@ public sealed class OrgChartVisibilityEndpointsTests : IAsyncLifetime
         // then revoke the original — guard must allow it.
         var client = _adminApp!.CreateClient();
         var grantBody = new CreatePersonRoleCommandModel(NonAdminId, Roles.Admin, null, "co-admin");
-        var grant = await client.PostAsJsonAsync("/v1/person-roles", grantBody).ConfigureAwait(false);
+        var grant = await client.PostJsonAsync("/v1/person-roles", grantBody).ConfigureAwait(false);
         grant.StatusCode.Should().Be(HttpStatusCode.Created);
 
         var list = await client.GetAsync($"/v1/person-roles?person={AdminPersonId:D}&role={Roles.Admin:D}&active=true")
             .ConfigureAwait(false);
-        var listDoc = await list.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var listDoc = await list.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         var firstAdminId = listDoc.GetProperty("items").EnumerateArray().First()
-            .GetProperty("personRoleId").GetGuid();
+            .GetProperty("person_role_id").GetGuid();
 
         var del = await client.DeleteAsync($"/v1/person-roles/{firstAdminId:D}").ConfigureAwait(false);
         del.StatusCode.Should().Be(HttpStatusCode.NoContent);

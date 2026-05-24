@@ -57,7 +57,7 @@ public sealed class PersonsEndpointTests : IAsyncLifetime
             var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             throw new InvalidOperationException($"Expected 2xx, got {(int)response.StatusCode}. Body: {body}");
         }
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("email").GetString().Should().Be("alice@example.com");
         doc.GetProperty("display_name").GetString().Should().Be("Alice Smith");
@@ -119,7 +119,7 @@ public sealed class PersonsEndpointTests : IAsyncLifetime
             var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             throw new InvalidOperationException($"Expected 200, got {(int)response.StatusCode}. Body: {body}");
         }
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("email").GetString().Should().Be("alice@example.com");
     }
 

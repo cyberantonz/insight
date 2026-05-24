@@ -55,7 +55,7 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
         response.Headers.GetValues("Link").Should().ContainSingle()
             .Which.Should().Contain("/v1/profiles").And.Contain("rel=\"successor-version\"");
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("person_id").GetGuid().Should().Be(AlicePersonId);
         doc.GetProperty("email").GetString().Should().Be("alice@example.com");
@@ -84,7 +84,7 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("email").GetString().Should().Be("bob@example.com");
 
@@ -114,7 +114,7 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("parent_person_id").GetGuid().Should().Be(BobPersonId);
         doc.GetProperty("supervisor_email").GetString().Should().Be("bob@example.com");
     }
@@ -135,7 +135,7 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("email").GetString().Should().Be("bob@example.com");
 
@@ -153,11 +153,11 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "alice@example.com", null, null);
 
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         // Profile-specific fields.
         doc.GetProperty("person_id").GetGuid().Should().Be(AlicePersonId);
@@ -183,11 +183,11 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "carol@example.com", null, null);
 
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         // Carol is the root — no supervisor.
         // Null-condition serialisation drops the property entirely for
