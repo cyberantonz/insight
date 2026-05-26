@@ -149,6 +149,19 @@ public sealed class PersonsRepository : IPersonsReader
         return await ReadPersonIdsAsync(cmd, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<Guid?> ResolvePersonIdByAccountIdAsync(
+        Guid tenantId,
+        string accountId,
+        CancellationToken cancellationToken)
+    {
+        await using var conn = await _factory.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var cmd = new MySqlCommand(SqlAuth.ResolvePersonIdByAccountId, conn);
+        cmd.Parameters.AddWithValue("@tenant_id", tenantId.ToByteArray(bigEndian: true));
+        cmd.Parameters.AddWithValue("@account_id", accountId);
+        var raw = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return raw is byte[] bytes && bytes.Length == 16 ? new Guid(bytes, bigEndian: true) : null;
+    }
+
     public async Task<IReadOnlyList<PersonSourceId>> GetCurrentSourceIdsAsync(
         Guid tenantId,
         Guid personId,

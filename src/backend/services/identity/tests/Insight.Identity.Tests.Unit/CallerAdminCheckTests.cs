@@ -68,7 +68,7 @@ public sealed class CallerAdminCheckTests
 
     private sealed class StaticCallerContext(Guid? id) : ICallerContext
     {
-        public Guid? Resolve(HttpContext context) => id;
+        public Task<Guid?> ResolveAsync(HttpContext context, CancellationToken cancellationToken) => Task.FromResult(id);
     }
 
     private sealed class StaticTenantContext(Guid? id) : ITenantContext
@@ -93,7 +93,7 @@ public sealed class CallerAdminCheckTests
         public Task<IReadOnlyList<PersonRole>> GetActiveByPersonAsync(Guid tenantId, Guid personId, CancellationToken cancellationToken)
             => throw new NotImplementedException("not exercised in this test");
 
-        public Task<PersonRole?> GetPersonRoleByIdAsync(Guid personRoleId, CancellationToken cancellationToken)
+        public Task<PersonRole?> GetPersonRoleByIdAsync(Guid tenantId, Guid personRoleId, CancellationToken cancellationToken)
             => throw new NotImplementedException("not exercised in this test");
 
         public Task<PagedResult<PersonRole>> ListAsync(Guid tenantId, Guid? filterByPerson, Guid? filterByRole, bool activeOnly, PageRequest page, CancellationToken cancellationToken)

@@ -37,7 +37,7 @@ public static class VisibilityEndpoints
             if (!validation.IsValid) return EndpointHelpers.ValidationFailure(validation);
 
             var tenantId = EndpointHelpers.ResolveTenant(http)!.Value;
-            var callerPersonId = EndpointHelpers.ResolveCaller(http)!.Value;
+            var callerPersonId = (await EndpointHelpers.ResolveCallerAsync(http, ct).ConfigureAwait(false))!.Value;
             var id = await repo.InsertAsync(
                 tenantId, body.ViewerPersonId, body.ViewedPersonId,
                 body.ValidFrom, callerPersonId, body.Reason, ct).ConfigureAwait(false);
@@ -46,7 +46,7 @@ public static class VisibilityEndpoints
                 ("viewer_person_id", body.ViewerPersonId),
                 ("viewed_person_id", body.ViewedPersonId),
                 ("author_person_id", callerPersonId));
-            var created = await repo.GetByIdAsync(id, ct).ConfigureAwait(false);
+            var created = await repo.GetByIdAsync(tenantId, id, ct).ConfigureAwait(false);
             return Results.Created($"/v1/visibility/{id:D}", VisibilityResponse.From(created!));
         });
 
@@ -83,14 +83,15 @@ public static class VisibilityEndpoints
             var gate = await admin.CheckAsync(http, ct).ConfigureAwait(false);
             if (gate is not AdminCheckResult.IsAdmin) return EndpointHelpers.GateResult(gate);
 
-            var existing = await repo.GetByIdAsync(id, ct).ConfigureAwait(false);
+            var tenantId = EndpointHelpers.ResolveTenant(http)!.Value;
+            var existing = await repo.GetByIdAsync(tenantId, id, ct).ConfigureAwait(false);
             if (existing is null) return EndpointHelpers.NotFound("visibility", id);
 
-            var rows = await repo.SoftDeleteAsync(id, body?.Reason, ct).ConfigureAwait(false);
+            var rows = await repo.SoftDeleteAsync(tenantId, id, body?.Reason, ct).ConfigureAwait(false);
             EndpointHelpers.Audit(loggerFactory, "visibility.revoke",
                 ("visibility_id", id),
                 ("rows_affected", rows),
-                ("author_person_id", EndpointHelpers.ResolveCaller(http)!.Value));
+                ("author_person_id", (await EndpointHelpers.ResolveCallerAsync(http, ct).ConfigureAwait(false))!.Value));
             return Results.NoContent();
         });
 

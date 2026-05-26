@@ -94,6 +94,17 @@ public interface IPersonsReader
         Guid tenantId,
         Guid personId,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns the <c>person_id</c> bound to a source-native account
+    /// id within the tenant (active <c>account_person_map</c> row
+    /// only). Used for caller resolution from JWT id claims (oid /
+    /// sub). Returns <c>null</c> when no active binding matches.
+    /// </summary>
+    Task<Guid?> ResolvePersonIdByAccountIdAsync(
+        Guid tenantId,
+        string accountId,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
