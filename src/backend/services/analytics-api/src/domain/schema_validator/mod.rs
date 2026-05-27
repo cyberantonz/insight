@@ -51,8 +51,8 @@ use crate::domain::schema_validator::repository::{
     CatalogRow, count_all, find_by_metric_key, mark_all_unchecked, stream_all,
     update_schema_columns,
 };
-use futures_util::StreamExt;
 use crate::domain::schema_validator::status::{SchemaState, SchemaStatus, should_log_transition};
+use futures_util::StreamExt;
 
 /// Default debounce window for the per-write hook (DESIGN §3.2 + #521 issue body).
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_mins(1);
