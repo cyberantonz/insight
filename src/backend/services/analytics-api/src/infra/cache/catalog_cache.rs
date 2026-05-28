@@ -153,13 +153,33 @@ pub trait CatalogCache: Send + Sync {
         payload: &CatalogResponse,
     ) -> anyhow::Result<()>;
 
-    /// Tenant-prefix purge (`SCAN cat:v1:{tenant_id}:* + UNLINK`). When `mode`
-    /// is [`InvalidateMode::Lock`], also opens the 5 s synchronous-bypass
-    /// window for that tenant (see [`LOCK_BYPASS_WINDOW`]).
+    /// Drop the tenant's entire catalog cache. With the per-tenant-hash
+    /// storage shape (see module docs), this is a single atomic
+    /// `UNLINK cat:v1:{tenant_id}` — no cursor walk, no per-entry purge.
     ///
-    /// First call site is admin-crud (#525); the trait method is exercised by
-    /// tests today so the dead-code annotation only applies until that PR
-    /// lands.
+    /// `mode` controls whether to *also* arm the synchronous-resolver-bypass
+    /// window:
+    ///
+    /// - [`InvalidateMode::Standard`] — UNLINK only. Used for ordinary
+    ///   threshold edits where the only thing at stake is "the next read
+    ///   should see the new value", which the cache miss + resolver fetch
+    ///   already guarantees.
+    /// - [`InvalidateMode::Lock`] — UNLINK **plus** flip the
+    ///   [`Self::should_skip`] flag for this tenant for [`LOCK_BYPASS_WINDOW`]
+    ///   (≈ 5 s = 2× cross-replica-invalidation NFR). The reader then
+    ///   bypasses the cache entirely for that tenant — both reads and
+    ///   writes — for the duration. This closes the
+    ///   read-resolve-then-put-stale race: a concurrent reader that
+    ///   already loaded a pre-lock response from the DB but hasn't yet
+    ///   `put` it into the cache will be told to skip the put, so the
+    ///   stale payload never lands on a now-cleared cache. Reserved for
+    ///   compliance-critical lock-set / lock-cleared transitions, where
+    ///   serving a stale pre-lock policy for even a few hundred
+    ///   milliseconds is a regulatory red flag.
+    ///
+    /// First call site is admin-crud (#525); the trait method is
+    /// exercised by tests today, so the `dead_code` annotation only
+    /// applies until that PR lands.
     ///
     /// # Errors
     ///
