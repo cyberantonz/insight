@@ -109,16 +109,18 @@ reconcile_resolve_destination_id() {
   : "${RECONCILE_DEST_CLICKHOUSE_USERNAME:?RECONCILE_DEST_CLICKHOUSE_USERNAME must be set}"
   : "${RECONCILE_DEST_CLICKHOUSE_PASSWORD:?RECONCILE_DEST_CLICKHOUSE_PASSWORD must be set}"
   local config_json
+  # ClickHouse destination v2.0+ spec: port is a string, protocol is
+  # required ("http"/"https"). The old ssl+schema fields are gone.
   config_json="$(python3 -c '
 import os, json
+ssl = os.environ.get("RECONCILE_DEST_CLICKHOUSE_SSL", "false").lower() in ("1", "true", "yes")
 print(json.dumps({
   "host":     os.environ["RECONCILE_DEST_CLICKHOUSE_HOST"],
-  "port":     int(os.environ["RECONCILE_DEST_CLICKHOUSE_PORT"]),
+  "port":     os.environ["RECONCILE_DEST_CLICKHOUSE_PORT"],
+  "protocol": "https" if ssl else "http",
   "database": os.environ["RECONCILE_DEST_CLICKHOUSE_DATABASE"],
   "username": os.environ["RECONCILE_DEST_CLICKHOUSE_USERNAME"],
   "password": os.environ["RECONCILE_DEST_CLICKHOUSE_PASSWORD"],
-  "ssl":      False,
-  "schema":   "default",
 }))
 ')"
 
