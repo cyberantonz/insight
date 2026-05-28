@@ -21,25 +21,31 @@ use uuid::Uuid;
 use crate::domain::admin_threshold::dto::{ListFilters, Scope, ThresholdView};
 use crate::infra::db::entities::metric_threshold;
 
-/// A minimal projection of `metric_catalog` for the gauntlet's pre-write
-/// referential-integrity check.
-#[derive(Debug, Clone)]
+/// Projection of `metric_catalog` for the gauntlet's pre-write checks.
+/// Carries every column admin-crud needs in one round-trip:
+///
+/// - `metric_key` — used by lock-enforcer, schema-validator hook, audit.
+/// - `is_enabled` — referential-integrity gate (reject `UNKNOWN_OR_DISABLED`).
+/// - `higher_is_better` — sanity-bound direction (no second query).
+/// - `schema_status` / `schema_error_code` — surfaced on the response view.
+#[derive(Debug, Clone, FromQueryResult)]
 pub struct CatalogLookup {
     pub metric_key: String,
     pub is_enabled: bool,
+    pub higher_is_better: bool,
     pub schema_status: String,
     pub schema_error_code: Option<String>,
 }
 
-/// `SELECT metric_key, is_enabled, schema_status, schema_error_code
-///  FROM metric_catalog WHERE id = ?`. Returns `Ok(None)` for unknown
-/// `metric_id` so the gauntlet can emit `invalid_argument` with
-/// `reason = UNKNOWN_OR_DISABLED`.
+/// `SELECT metric_key, is_enabled, higher_is_better, schema_status,
+///  schema_error_code FROM metric_catalog WHERE id = ?`. Returns
+/// `Ok(None)` for unknown `metric_id` so the gauntlet can emit
+/// `invalid_argument` with `reason = UNKNOWN_OR_DISABLED`.
 ///
 /// Raw SQL (not the SeaORM entity) because the typed `metric_catalog::Model`
 /// declared in #519 only exposes the columns the schema-validator
-/// touches — adding `is_enabled` would reshape an entity owned by
-/// another component for a single boolean.
+/// touches — adding `is_enabled` / `higher_is_better` would reshape an
+/// entity owned by another component for two booleans.
 ///
 /// # Errors
 ///
@@ -51,25 +57,11 @@ pub async fn find_metric_catalog(
     let backend = db.get_database_backend();
     let stmt = Statement::from_sql_and_values(
         backend,
-        "SELECT metric_key, is_enabled, schema_status, schema_error_code \
+        "SELECT metric_key, is_enabled, higher_is_better, schema_status, schema_error_code \
          FROM metric_catalog WHERE id = ?",
         [Value::Bytes(Some(Box::new(metric_id.as_bytes().to_vec())))],
     );
-    let row = CatalogFullRow::find_by_statement(stmt).one(db).await?;
-    Ok(row.map(|r| CatalogLookup {
-        metric_key: r.metric_key,
-        is_enabled: r.is_enabled,
-        schema_status: r.schema_status,
-        schema_error_code: r.schema_error_code,
-    }))
-}
-
-#[derive(Debug, FromQueryResult)]
-struct CatalogFullRow {
-    metric_key: String,
-    is_enabled: bool,
-    schema_status: String,
-    schema_error_code: Option<String>,
+    CatalogLookup::find_by_statement(stmt).one(db).await
 }
 
 /// Reverse lookup: find the `metric_catalog` row whose `metric_key`
@@ -87,7 +79,7 @@ pub async fn find_catalog_id_for_metric_key(
     let backend = db.get_database_backend();
     let stmt = Statement::from_sql_and_values(
         backend,
-        "SELECT id AS id, schema_status AS schema_status, schema_error_code AS schema_error_code \
+        "SELECT id, higher_is_better, schema_status, schema_error_code \
          FROM metric_catalog WHERE metric_key = ?",
         [Value::from(metric_key)],
     );
@@ -97,6 +89,10 @@ pub async fn find_catalog_id_for_metric_key(
 #[derive(Debug, Clone, FromQueryResult)]
 pub struct CatalogJoinRow {
     pub id: Uuid,
+    /// Carried so the PUT path can do sanity-bound validation without a
+    /// second round-trip (`good` vs `warn` ordering depends on the
+    /// metric's `higher_is_better` flag).
+    pub higher_is_better: bool,
     pub schema_status: String,
     pub schema_error_code: Option<String>,
 }

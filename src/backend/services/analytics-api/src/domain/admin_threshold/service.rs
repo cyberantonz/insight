@@ -208,37 +208,21 @@ impl AdminThresholdService {
         ctx: &SecurityContext,
         req: &CreateRequest,
     ) -> Result<ThresholdView, Response> {
-        // Step 1: authz.
+        // Step 1: authz (pure — trait call, no DB).
         if !self.tenant_auth.is_tenant_admin(ctx.insight_tenant_id, ctx) {
             return Err(not_tenant_admin_response());
         }
 
-        // Step 2: referential integrity.
-        let cat = repository::find_metric_catalog(&self.db, req.metric_id)
-            .await
-            .map_err(|e| internal_error_response(&e))?;
-        let Some(cat) = cat else {
-            return Err(unknown_or_disabled_metric_response());
-        };
-        if !cat.is_enabled {
-            return Err(unknown_or_disabled_metric_response());
-        }
+        // Pure validations FIRST — reject malformed requests without
+        // spending a DB round-trip. Order matches DESIGN §3.2 admin-crud
+        // step list, just with the pure steps lifted ahead of the
+        // first DB hit.
 
         // Step 3: scope-shape + sentinel normalization.
         let role_slug = req.role_slug.clone().unwrap_or_default();
         let team_id = req.team_id.clone().unwrap_or_default();
         if let Some(resp) = validate_scope_shape(req.scope, &role_slug, &team_id) {
             return Err(resp);
-        }
-
-        // Step 4: sanity bounds.
-        // The metric's `higher_is_better` flag isn't on `CatalogLookup` —
-        // pull it from the join row.
-        let direction = fetch_higher_is_better(&self.db, &cat.metric_key)
-            .await
-            .map_err(|e| internal_error_response(&e))?;
-        if !sanity_bounds_ok(direction, req.good, req.warn) {
-            return Err(sanity_bound_response());
         }
 
         // Step 5: v1 lock-scope restriction.
@@ -249,6 +233,25 @@ impl AdminThresholdService {
         // Step 6: lock_reason gating.
         if let Some(resp) = validate_lock_reason(req.is_locked, req.lock_reason.as_deref(), None) {
             return Err(resp);
+        }
+
+        // Step 2: referential integrity. `find_metric_catalog` also
+        // returns `higher_is_better`, so step 4 (sanity bounds) is a
+        // pure check on the same row — no second DB hit.
+        let cat = repository::find_metric_catalog(&self.db, req.metric_id)
+            .await
+            .map_err(|e| internal_error_response(&e))?;
+        let Some(cat) = cat else {
+            return Err(unknown_or_disabled_metric_response());
+        };
+        if !cat.is_enabled {
+            return Err(unknown_or_disabled_metric_response());
+        }
+
+        // Step 4: sanity bounds (pure check against fetched
+        // higher_is_better — same DB round-trip as referential integrity).
+        if !sanity_bounds_ok(cat.higher_is_better, req.good, req.warn) {
+            return Err(sanity_bound_response());
         }
 
         // Step 8: lock-enforcer.
@@ -374,8 +377,13 @@ impl AdminThresholdService {
         // Step 11: schema-validator (best-effort, debounced).
         let _ = self.validator.validate(&cat.metric_key).await;
 
+        // Project the inserted row through the response view. We
+        // already know `metric_id` (req-supplied) and the catalog row's
+        // schema-status columns from the earlier `find_metric_catalog`
+        // — no second lookup.
         let cat_join = repository::CatalogJoinRow {
             id: req.metric_id,
+            higher_is_better: cat.higher_is_better,
             schema_status: cat.schema_status,
             schema_error_code: cat.schema_error_code,
         };
@@ -396,9 +404,24 @@ impl AdminThresholdService {
         id: Uuid,
         req: &UpdateRequest,
     ) -> Result<ThresholdView, Response> {
+        // Step 1: authz (pure).
         if !self.tenant_auth.is_tenant_admin(ctx.insight_tenant_id, ctx) {
             return Err(not_tenant_admin_response());
         }
+
+        // Pure validation that doesn't depend on the existing row —
+        // lock_reason gating (Step 6). Fires before any DB hit so a
+        // malformed request (is_locked = true with no reason) doesn't
+        // spend a round-trip.
+        if let Some(resp) = validate_lock_reason(req.is_locked, req.lock_reason.as_deref(), None) {
+            return Err(resp);
+        }
+
+        // Load existing row + catalog row. ID-bound writes need the
+        // existing row anyway (immutable-field comparison + audit
+        // payload); the catalog row carries `higher_is_better` for the
+        // sanity-bound check and the `metric_id` / `schema_status` for
+        // the response view — folded into one round-trip pair.
         let existing = repository::find_threshold(&self.db, id)
             .await
             .map_err(|e| internal_error_response(&e))?
@@ -438,20 +461,35 @@ impl AdminThresholdService {
             return Err(immutable_field_response(id, "team_id"));
         }
 
-        // Sanity bounds (Step 4).
-        let direction = fetch_higher_is_better(&self.db, &existing.metric_key)
-            .await
-            .map_err(|e| internal_error_response(&e))?;
-        if !sanity_bounds_ok(direction, req.good, req.warn) {
-            return Err(sanity_bound_response());
-        }
-
-        // v1 lock-scope restriction (Step 5).
+        // v1 lock-scope restriction (Step 5) — pure check against the
+        // existing row's scope.
         if req.is_locked && !matches!(existing_scope, Scope::ProductDefault | Scope::Tenant) {
             return Err(lock_scope_invalid_response(Some(id)));
         }
 
-        // lock_reason gating (Step 6).
+        // Catalog row — used for sanity-bound direction now AND for the
+        // response-view projection at the end. One query, two consumers.
+        let cat = repository::find_catalog_id_for_metric_key(&self.db, &existing.metric_key)
+            .await
+            .map_err(|e| internal_error_response(&e))?
+            .ok_or_else(|| {
+                internal_error_response(&sea_orm::DbErr::RecordNotFound(format!(
+                    "metric_catalog row for metric_key {} (referenced by threshold {})",
+                    existing.metric_key, id
+                )))
+            })?;
+
+        // Sanity bounds (Step 4) — pure check against the catalog
+        // row's `higher_is_better`.
+        if !sanity_bounds_ok(cat.higher_is_better, req.good, req.warn) {
+            return Err(sanity_bound_response());
+        }
+
+        // lock_reason gating (Step 6) with the row id attached for the
+        // resource_name on the envelope. The pre-DB pass already
+        // rejected malformed requests; this re-runs the gate with
+        // `Some(id)` so the wire shape matches the post-DB CHECK arm
+        // when the resource is now knowable.
         if let Some(resp) =
             validate_lock_reason(req.is_locked, req.lock_reason.as_deref(), Some(id))
         {
@@ -594,15 +632,12 @@ impl AdminThresholdService {
 
         let _ = self.validator.validate(&existing.metric_key).await;
 
-        let cat = repository::find_catalog_id_for_metric_key(&self.db, &existing.metric_key)
-            .await
-            .map_err(|e| internal_error_response(&e))?
-            .ok_or_else(|| {
-                internal_error_response(&sea_orm::DbErr::RecordNotFound(format!(
-                    "metric_catalog row for metric_key {} (referenced by threshold {})",
-                    existing.metric_key, id
-                )))
-            })?;
+        // Reuse the catalog row we already loaded before sanity_bounds
+        // — schema_status / schema_error_code may have shifted in the
+        // meantime if the schema-validator hook above re-checked, but
+        // a stale read here is harmless: the next `get_one` will pick
+        // up the updated status, and the response just reports what we
+        // observed when this write began.
         repository::view_from_row(&updated, &cat).map_err(|e| internal_error_response(&e))
     }
 
@@ -758,28 +793,6 @@ fn validate_lock_reason(
         }
     }
     None
-}
-
-/// Read `metric_catalog.higher_is_better` for the metric — sanity-bound
-/// direction lives there, not on `CatalogLookup` (which the
-/// referential-integrity check only needs `metric_key` + `is_enabled` for).
-async fn fetch_higher_is_better(
-    db: &DatabaseConnection,
-    metric_key: &str,
-) -> Result<bool, sea_orm::DbErr> {
-    use sea_orm::{ConnectionTrait, FromQueryResult, Statement, Value};
-    #[derive(FromQueryResult)]
-    struct Row {
-        higher_is_better: bool,
-    }
-    let backend = db.get_database_backend();
-    let stmt = Statement::from_sql_and_values(
-        backend,
-        "SELECT higher_is_better FROM metric_catalog WHERE metric_key = ?",
-        [Value::from(metric_key)],
-    );
-    let row = Row::find_by_statement(stmt).one(db).await?;
-    Ok(row.is_none_or(|r| r.higher_is_better))
 }
 
 #[cfg(test)]
