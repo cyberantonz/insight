@@ -42,15 +42,30 @@ use crate::infra::cache::catalog_cache::{
 
 const ENV_VAR: &str = "INTEGRATION_TESTS_REDIS_URL";
 
+/// Connect-side timeout for the Redis handshake. `ConnectionManager` is
+/// built for resilient reconnect — if Redis is gone, its initial connect
+/// applies internal backoff and effectively hangs for minutes. A test
+/// run with `INTEGRATION_TESTS_REDIS_URL` set but Redis down would block
+/// the entire test binary; this bound surfaces that case as a clean skip
+/// in ≤ 3 s.
+const REDIS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 async fn connect_or_skip() -> Option<RedisCatalogCache> {
     let Ok(url) = std::env::var(ENV_VAR) else {
         eprintln!("skipping: {ENV_VAR} not set");
         return None;
     };
-    match RedisCatalogCache::connect(&url).await {
-        Ok(c) => Some(c),
-        Err(e) => {
+    match tokio::time::timeout(REDIS_CONNECT_TIMEOUT, RedisCatalogCache::connect(&url)).await {
+        Ok(Ok(c)) => Some(c),
+        Ok(Err(e)) => {
             eprintln!("skipping: cannot connect to {ENV_VAR}: {e}");
+            None
+        }
+        Err(_) => {
+            eprintln!(
+                "skipping: connect to {ENV_VAR} timed out after \
+                 {REDIS_CONNECT_TIMEOUT:?} (Redis likely down)"
+            );
             None
         }
     }
