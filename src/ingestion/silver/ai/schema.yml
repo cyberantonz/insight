@@ -111,8 +111,16 @@ models:
           other tools that do not expose git-level attribution.
       - name: pull_requests_count
         description: >
-          Pull requests attributed to Claude Code sessions. Populated for
-          Claude Enterprise only (code_pull_request_count). NULL for Cursor.
+          Pull requests attributed to Claude Code sessions.
+          Claude Enterprise: code_pull_request_count.
+          Claude Team: total_prs from the web API.
+          NULL for Cursor and Copilot.
+      - name: prs_with_cc_count
+        description: >
+          PRs where Claude Code was active at least once in the measurement
+          window. Populated for Claude Team (prs_with_cc from the web API).
+          NULL for all other sources. Paired with pull_requests_count to
+          compute the prs_with_cc_percentage Gold metric.
       - name: tool_action_breakdown_json
         description: >
           Raw JSON breakdown of tool actions per tool type.

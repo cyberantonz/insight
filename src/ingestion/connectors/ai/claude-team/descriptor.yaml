@@ -12,10 +12,7 @@ version: "1.2.0"
 schedule: '0 4 * * *'
 workflow: sync
 
-# No dbt selector yet — Silver transformations are out of scope for
-# this MVP (Phase 6+). Once silver models land they'll be tagged
-# 'claude-team' and selected here as `tag:claude-team+`.
-dbt_select: ''
+dbt_select: 'tag:claude-team+'
 
 connection:
   namespace: bronze_claude_team

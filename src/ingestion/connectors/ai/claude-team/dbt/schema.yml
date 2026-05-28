@@ -1,0 +1,102 @@
+version: 2
+
+sources:
+  - name: bronze_claude_team
+    schema: bronze_claude_team
+    tables:
+      - name: claude_team_members
+      - name: claude_team_code_metrics
+
+models:
+  - name: claude_team__ai_dev_usage
+    description: >
+      Bronze → Silver step 1: Claude Team per-user per-day Claude Code usage
+      → class_ai_dev_usage. Sourced from claude_team_code_metrics (daily
+      aggregates pulled via the customer-deployed claude-team-proxy from the
+      claude.ai web API). One row per (tenant, email, metric_date). Email is
+      always non-NULL (the API returns per-user rows; rows without an email are
+      dropped). session_count from total_sessions; lines_added from
+      total_lines_accepted; pull_requests_count from total_prs;
+      prs_with_cc_count from prs_with_cc.
+    columns:
+      - name: insight_tenant_id
+        tests:
+          - not_null
+      - name: source_id
+        tests:
+          - not_null
+      - name: unique_key
+        description: "Composite dedup key: tenant-source-email-day"
+        tests:
+          - not_null
+          - unique
+      - name: email
+        description: "Work email (lowercased) — identity key"
+        tests:
+          - not_null
+      - name: api_key_id
+        description: "Always NULL — Claude Team uses session-based auth, not API keys"
+      - name: day
+        description: "Usage date (UTC) — toDate(metric_date)"
+        tests:
+          - not_null
+      - name: tool
+        description: "Always 'claude_code'"
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['claude_code']
+      - name: session_count
+        description: "total_sessions from the claude.ai metrics API"
+        tests:
+          - not_null
+      - name: lines_added
+        description: "total_lines_accepted — AI-accepted lines added"
+        tests:
+          - not_null
+      - name: lines_removed
+        description: "Always 0 — Claude Team does not surface AI-removed lines"
+        tests:
+          - not_null
+      - name: total_lines_added
+        description: "Always NULL — total keystrokes not available from the web API"
+      - name: total_lines_removed
+        description: "Always NULL — total keystrokes not available from the web API"
+      - name: tool_use_offered
+        description: "Always NULL — inline-completion counters not surfaced by the web API"
+      - name: tool_use_accepted
+        description: "Always NULL — inline-completion counters not surfaced by the web API"
+      - name: agent_sessions
+        description: "Always NULL — not exposed by the claude.ai team metrics endpoint"
+      - name: chat_requests
+        description: "Always NULL — not exposed by the claude.ai team metrics endpoint"
+      - name: cost_cents
+        description: "Always NULL — cost is org-level subscription, not per-user"
+      - name: commits_count
+        description: "Always NULL — git commit counts not available in the web API"
+      - name: pull_requests_count
+        description: "total_prs — total PRs in the measurement window"
+      - name: prs_with_cc_count
+        description: "prs_with_cc — PRs where Claude Code was active at least once"
+      - name: tool_action_breakdown_json
+        description: "Always NULL — per-tool-type breakdown not exposed by the web API"
+      - name: source
+        description: "Always 'claude_playwright'"
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['claude_playwright']
+      - name: data_source
+        description: "Passed through from bronze (always 'insight_claude_team')"
+        tests:
+          - not_null
+      - name: collected_at
+        description: "_airbyte_extracted_at"
+        tests:
+          - not_null
+      - name: _version
+        description: "ReplacingMergeTree version — toUnixTimestamp64Milli(_airbyte_extracted_at) per ADR-0001."
+        tests:
+          - not_null
