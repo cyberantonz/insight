@@ -1,5 +1,6 @@
 //! HTTP API layer — routes and handlers.
 
+pub(crate) mod canonical_json;
 mod catalog;
 pub(crate) mod error;
 mod handlers;
