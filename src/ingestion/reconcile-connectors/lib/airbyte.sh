@@ -697,8 +697,27 @@ print(json.dumps({
   "connectionConfiguration": json.loads(sys.argv[4]),
 }))
 ' "${workspace_id}" "${definition_id}" "${name}" "${config_json}")
-  ab__curl POST /api/v1/destinations/create "${body}" \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["destinationId"])'
+  # Capture the response so a non-2xx (e.g. 422 schema-validation) surfaces
+  # the Airbyte error body — which names the offending config field — instead
+  # of a bare `KeyError: 'destinationId'` from piping straight into the parser.
+  local resp dest_id
+  if ! resp="$(ab__curl POST /api/v1/destinations/create "${body}")"; then
+    printf 'ab_ensure_destination: destinations/create failed for "%s" (definitionId %s).\nAirbyte response: %s\n' \
+      "${name}" "${definition_id}" "${resp}" >&2
+    return 1
+  fi
+  dest_id="$(printf '%s' "${resp}" | python3 -c 'import sys, json
+try:
+    print(json.load(sys.stdin)["destinationId"])
+except Exception:
+    sys.exit(1)
+')"
+  if [[ -z "${dest_id}" ]]; then
+    printf 'ab_ensure_destination: destinations/create returned no destinationId for "%s".\nAirbyte response: %s\n' \
+      "${name}" "${resp}" >&2
+    return 1
+  fi
+  printf '%s' "${dest_id}"
 }
 
 # ---------------------------------------------------------------------------

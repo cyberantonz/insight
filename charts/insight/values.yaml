@@ -207,6 +207,7 @@ clickhouse:
   deploy: true
   host: "" # deploy=true → host computed by helper from release name; deploy=false → operator MUST set
   port: 8123 # RFC standard for CH HTTP
+  protocol: http # http|https for the Bronze airbyte/destination-clickhouse 2.x connection; bundled CH is plain HTTP on 8123
   database: "" # MUST be set
   username: "" # MUST be set
   passwordSecret:

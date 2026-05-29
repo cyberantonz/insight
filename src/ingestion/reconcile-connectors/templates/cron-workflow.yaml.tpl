@@ -41,7 +41,12 @@ metadata:
     insight.cyberfabric.com/tenant: ${TENANT}
     workflows.argoproj.io/controller-instanceid: ${ARGO_INSTANCE_ID}
 spec:
-  schedule: "${SCHEDULE}"
+  # `schedules:` (array) is the Argo Workflows >=3.5 schema. The legacy
+  # singular `schedule:` is rejected by the new CRD with a strict-decoding
+  # `unknown field "spec.schedule"` error (same fix as the chart's
+  # reconcile-cron.yaml, PR #549).
+  schedules:
+    - "${SCHEDULE}"
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 300
   workflowSpec:
