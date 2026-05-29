@@ -113,9 +113,9 @@ models:
       - name: pull_requests_count
         description: >
           Pull requests attributed to Claude Code sessions.
-          Claude Enterprise: code_pull_request_count.
-          Claude Team: total_prs from the web API.
-          NULL for Cursor and Copilot.
+          Claude Enterprise only: code_pull_request_count.
+          NULL for Claude Team (Team-plan PR counts go into prs_total_count),
+          Cursor, and Copilot.
       - name: prs_with_cc_count
         description: >
           PRs where Claude Code was active at least once in the measurement
