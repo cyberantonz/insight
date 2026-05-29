@@ -44,8 +44,11 @@ public sealed class JwtCallerResolveTests : IAsyncLifetime
     {
         await _fixture.ResetAsync().ConfigureAwait(false);
         await SeedCallerAsync().ConfigureAwait(false);
-        // No visibility grant needed: GET /v1/persons does a self-lookup,
-        // and the caller's seeded email observation roots their forest.
+        // Caller needs visibility on the target to get past the
+        // /v1/persons gate; a whole-tenant grant on themselves is the
+        // simplest way to keep the JWT-resolution assertion isolated
+        // from visibility logic.
+        await _fixture.SeedWholeTenantVisibilityAsync(TenantId, CallerPersonId).ConfigureAwait(false);
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -115,7 +118,7 @@ public sealed class JwtCallerResolveTests : IAsyncLifetime
             .ConfigureAwait(false);
 
         response.IsSuccessStatusCode.Should().BeTrue(
-            "the header pinned OtherPersonId as the caller, whose own node roots the returned forest");
+            "the header pinned OtherPersonId as the caller; that person has whole-tenant visibility");
     }
 
     [Fact]
@@ -160,9 +163,9 @@ public sealed class JwtCallerResolveTests : IAsyncLifetime
     private async Task<HttpResponseMessage> CallSelfLookupAsync(string jwt)
     {
         // No default header, no config tenant — the JWT is the only
-        // signal. The caller resolves from the token; GET /v1/persons
-        // then roots the forest at the caller's own node, whose email
-        // observation we assert on.
+        // signal. The caller resolves from the token, then we look up
+        // the caller's own email (the whole-tenant visibility grant
+        // makes the visibility check pass).
         var app = new TestApplicationFactory(
             _fixture.ConnectionString, defaultTenantId: null, defaultCallerPersonId: null);
         var client = app.CreateClient();
@@ -204,10 +207,9 @@ public sealed class JwtCallerResolveTests : IAsyncLifetime
     {
         await using var conn = new MySqlConnection(_fixture.ConnectionString);
         await conn.OpenAsync().ConfigureAwait(false);
-        // OtherPerson needs an email observation so the self-lookup that
-        // GET /v1/persons performs roots the forest at their node and
-        // returns 200 — proving the header caller, not the JWT, won.
-        await InsertPersonObservationAsync(conn, OtherPersonId, "email", "other@example.com", isValueId: true).ConfigureAwait(false);
+        // OtherPerson needs whole-tenant visibility so the header-
+        // wins test gets past the /v1/persons visibility check.
+        await _fixture.SeedWholeTenantVisibilityAsync(TenantId, OtherPersonId).ConfigureAwait(false);
     }
 
     private static async Task InsertPersonObservationAsync(

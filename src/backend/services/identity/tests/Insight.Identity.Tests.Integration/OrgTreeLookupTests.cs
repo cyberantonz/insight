@@ -32,11 +32,10 @@ public sealed class OrgTreeLookupTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         await _fixture.ResetAsync().ConfigureAwait(false);
-        var factory = new MariaDbConnectionFactory(
+        _repo = new PersonsRepository(new MariaDbConnectionFactory(
             new Microsoft.Extensions.Options.OptionsWrapper<MariaDbOptions>(
-                new MariaDbOptions { ConnectionString = _fixture.ConnectionString }));
-        _repo = new PersonsRepository(factory);
-        _personLookup = new PersonLookupService(_repo, new VisibilityRepository(factory));
+                new MariaDbOptions { ConnectionString = _fixture.ConnectionString })));
+        _personLookup = new PersonLookupService(_repo);
         _profileLookup = new ProfileLookupService(_repo, _personLookup);
     }
 
