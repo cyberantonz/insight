@@ -26,7 +26,13 @@
 #   .clickhouse.host .clickhouse.port .clickhouse.username .clickhouse.database
 #   .redis.host      .redis.port
 #   .identity.databaseName       (defaults to "identity")
-#   .identity.tenantDefaultId    (optional; empty disables the resolver)
+#   .global.tenantDefaultId      (optional; empty disables the resolver
+#                                 on both identity and analytics-api.
+#                                 Single source of truth for the
+#                                 single-tenant UUID — matches the
+#                                 chart's `global.tenantDefaultId` knob
+#                                 which also drives api-gateway's
+#                                 single-tenant-tr-plugin.)
 #   .identity.orgChartSourceType (optional; empty falls back to the
 #                                 appsettings default `bamboohr`)
 #
@@ -58,7 +64,7 @@ CH_DB=$(   yq -r '.clickhouse.database'      "$VALUES")
 RD_HOST=$( yq -r '.redis.host'               "$VALUES")
 RD_PORT=$( yq -r '.redis.port       // 6379' "$VALUES")
 IDENTITY_DB=$(yq -r '.identity.databaseName       // "identity"' "$VALUES")
-IDENTITY_TENANT_DEFAULT=$(yq -r '.identity.tenantDefaultId    // ""' "$VALUES")
+TENANT_DEFAULT=$(yq -r '.global.tenantDefaultId          // ""' "$VALUES")
 IDENTITY_ORG_CHART_SOURCE=$(yq -r '.identity.orgChartSourceType // ""' "$VALUES")
 
 for v in MDB_HOST MDB_USER MDB_DB CH_HOST CH_USER CH_DB RD_HOST; do
@@ -102,7 +108,8 @@ fi
 
 # ── Compose + apply ──
 # kubectl apply -f - reads stdin; the YAML never lands on disk.
-kubectl -n "$NS_APP" apply -f - >/dev/null <<EOF
+{
+  cat <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
@@ -128,6 +135,13 @@ stringData:
   ANALYTICS__redis_url: "${REDIS_URL}"
   ANALYTICS__bind_addr: "0.0.0.0:8081"
 EOF
+  # Metric Catalog single-tenant fallback. Mirrors the chart-side block
+  # (charts/insight/templates/secrets.yaml) — emit only when set so
+  # multi-tenant installs keep the resolver strict.
+  if [ -n "$TENANT_DEFAULT" ] && [ "$TENANT_DEFAULT" != "null" ]; then
+    echo "  ANALYTICS__metric_catalog__tenant_default_id: \"${TENANT_DEFAULT}\""
+  fi
+} | kubectl -n "$NS_APP" apply -f - >/dev/null
 echo "composed → $NS_APP/insight-analytics-api-config"
 
 # `insight-identity-config` carries the .NET identity service's
@@ -149,8 +163,8 @@ type: Opaque
 stringData:
   IDENTITY__mariadb__url: "mysql://${MDB_USER}:${MDB_PW}@${MDB_HOST}:${MDB_PORT}/${IDENTITY_DB}"
 EOF
-  if [ -n "$IDENTITY_TENANT_DEFAULT" ] && [ "$IDENTITY_TENANT_DEFAULT" != "null" ]; then
-    echo "  IDENTITY__identity__tenant_default_id: \"${IDENTITY_TENANT_DEFAULT}\""
+  if [ -n "$TENANT_DEFAULT" ] && [ "$TENANT_DEFAULT" != "null" ]; then
+    echo "  IDENTITY__identity__tenant_default_id: \"${TENANT_DEFAULT}\""
   fi
   if [ -n "$IDENTITY_ORG_CHART_SOURCE" ] && [ "$IDENTITY_ORG_CHART_SOURCE" != "null" ]; then
     echo "  IDENTITY__identity__org_chart_source_type: \"${IDENTITY_ORG_CHART_SOURCE}\""
