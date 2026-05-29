@@ -76,6 +76,13 @@ http://{{ include "insight.clickhouse.host" . }}:{{ include "insight.clickhouse.
 {{- required "clickhouse.database is required" .Values.clickhouse.database -}}
 {{- end -}}
 
+{{/* Wire protocol (http|https) for the Bronze ClickHouse destination. The
+     bundled ClickHouse serves plain HTTP on 8123, matching the http:// in
+     insight.clickhouse.url above; override clickhouse.protocol for a TLS CH. */}}
+{{- define "insight.clickhouse.protocol" -}}
+{{- default "http" .Values.clickhouse.protocol -}}
+{{- end -}}
+
 {{/* ---------- MariaDB ---------- */}}
 {{- define "insight.mariadb.host" -}}
 {{- if .Values.mariadb.deploy -}}

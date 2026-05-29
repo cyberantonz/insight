@@ -108,6 +108,14 @@ reconcile_resolve_destination_id() {
   : "${RECONCILE_DEST_CLICKHOUSE_DATABASE:?RECONCILE_DEST_CLICKHOUSE_DATABASE must be set}"
   : "${RECONCILE_DEST_CLICKHOUSE_USERNAME:?RECONCILE_DEST_CLICKHOUSE_USERNAME must be set}"
   : "${RECONCILE_DEST_CLICKHOUSE_PASSWORD:?RECONCILE_DEST_CLICKHOUSE_PASSWORD must be set}"
+  # connectionConfiguration for airbyte/destination-clickhouse 2.x (Bulk-CDK):
+  # required keys are host/port/protocol/database/username/password. NOTE the
+  # 1.x->2.x rewrite changed the schema — `port` is now a STRING (not int),
+  # `protocol` (http|https) is required, and the old `ssl`/`schema` keys were
+  # removed (sending them now yields a 422). `protocol` defaults to http to
+  # match the bundled plain-HTTP ClickHouse on 8123 (the chart's
+  # insight.clickhouse.url helper makes the same assumption); the chart
+  # injects RECONCILE_DEST_CLICKHOUSE_PROTOCOL explicitly.
   local config_json
   # ClickHouse destination v2.0+ spec: port is a string, protocol is
   # required ("http"/"https"). The old ssl+schema fields are gone.
@@ -115,12 +123,13 @@ reconcile_resolve_destination_id() {
 import os, json
 ssl = os.environ.get("RECONCILE_DEST_CLICKHOUSE_SSL", "false").lower() in ("1", "true", "yes")
 print(json.dumps({
-  "host":     os.environ["RECONCILE_DEST_CLICKHOUSE_HOST"],
-  "port":     os.environ["RECONCILE_DEST_CLICKHOUSE_PORT"],
-  "protocol": "https" if ssl else "http",
-  "database": os.environ["RECONCILE_DEST_CLICKHOUSE_DATABASE"],
-  "username": os.environ["RECONCILE_DEST_CLICKHOUSE_USERNAME"],
-  "password": os.environ["RECONCILE_DEST_CLICKHOUSE_PASSWORD"],
+  "host":        os.environ["RECONCILE_DEST_CLICKHOUSE_HOST"],
+  "port":        os.environ["RECONCILE_DEST_CLICKHOUSE_PORT"],
+  "protocol":    os.environ.get("RECONCILE_DEST_CLICKHOUSE_PROTOCOL", "http"),
+  "database":    os.environ["RECONCILE_DEST_CLICKHOUSE_DATABASE"],
+  "username":    os.environ["RECONCILE_DEST_CLICKHOUSE_USERNAME"],
+  "password":    os.environ["RECONCILE_DEST_CLICKHOUSE_PASSWORD"],
+  "enable_json": False,
 }))
 ')"
 
