@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::bff::audit::{AuthEvent, AuthEventKind, hash_session_id};
-use crate::bff::cookies::{build_set_session, read_session_cookie};
+use crate::bff::cookies::{SessionCookie, read_session_cookie};
 use crate::bff::errors::BffError;
 use crate::bff::handlers::{BffState, no_store};
 use crate::bff::identity;
@@ -141,17 +141,13 @@ pub async fn callback(
     // login-state records.
     let return_to = super::login::sanitize_return_to(Some(&ls.return_to));
 
-    let max_age = i64::try_from(st.cfg.session.ttl_seconds).unwrap_or(i64::MAX);
-    let set_cookie = build_set_session(&outcome.session_id, max_age);
     let location = HeaderValue::from_str(&return_to)
         .map_err(|e| BffError::Internal(anyhow::anyhow!("return_to not ASCII: {e}")))?;
     Ok((
         StatusCode::FOUND,
         no_store(),
-        [
-            (header::LOCATION, location),
-            (header::SET_COOKIE, set_cookie),
-        ],
+        SessionCookie::set(&outcome.session_id, outcome.record.expires_at, now),
+        [(header::LOCATION, location)],
     )
         .into_response())
 }

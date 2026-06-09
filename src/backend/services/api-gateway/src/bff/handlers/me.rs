@@ -16,7 +16,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use crate::bff::cookies::{build_clear_session, read_session_cookie};
+use crate::bff::cookies::{SessionCookie, read_session_cookie};
 use crate::bff::errors::BffError;
 use crate::bff::handlers::{BffState, jittered_refresh_at, no_store};
 use crate::bff::session::{SessionView, TenantView, UserView};
@@ -78,6 +78,7 @@ fn unauthorized_clear_cookie() -> Response {
     let mut resp = (
         StatusCode::UNAUTHORIZED,
         no_store(),
+        SessionCookie::clear(),
         Json(serde_json::json!({
             "type": "urn:insight:error:unauthorized",
             "title": "Unauthorized",
@@ -86,12 +87,12 @@ fn unauthorized_clear_cookie() -> Response {
         })),
     )
         .into_response();
+    // RFC 9457: problem+json content type. Override the `Content-Type:
+    // application/json` that `Json` set.
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/problem+json"),
     );
-    resp.headers_mut()
-        .append(header::SET_COOKIE, build_clear_session());
     resp
 }
 

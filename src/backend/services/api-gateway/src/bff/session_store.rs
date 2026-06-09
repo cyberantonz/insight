@@ -45,10 +45,8 @@ pub struct CreateSessionRequest<'a> {
 
 pub struct CreateSessionOutcome {
     pub session_id: String,
-    /// The full record we just persisted. Phase 1 callers only need
-    /// `session_id`, but Phase 2 (refresh/sessions endpoints) will read
-    /// from this without touching Redis again.
-    #[allow(dead_code)]
+    /// The full record we just persisted. Callers use it to set the
+    /// rotation cookie's `Max-Age` without an extra Redis read.
     pub record: SessionRecord,
 }
 

@@ -4,12 +4,17 @@
 //! MUST carry `__Host-` prefix, `HttpOnly`, `Secure`, `SameSite=Strict`,
 //! `Path=/`, no `Domain`. We build every `Set-Cookie` here via the typed
 //! `cookie` crate (re-exported by `axum-extra`) so the attribute set is
-//! constructed structurally rather than concatenated by hand. The
-//! snapshot tests below pin the exact rendered string so any
-//! crate-version drift fails CI explicitly instead of silently changing
-//! header bytes that browsers consume.
+//! constructed structurally rather than concatenated by hand.
+//!
+//! Handlers don't touch any of that. They compose a tuple response with
+//! [`SessionCookie::set`] (after login or refresh) or
+//! [`SessionCookie::clear`] (logout, 401 paths), and `IntoResponseParts`
+//! does the encoding and `Set-Cookie` insertion.
 
-use axum::http::HeaderValue;
+use std::convert::Infallible;
+
+use axum::http::{HeaderValue, header};
+use axum::response::{IntoResponseParts, ResponseParts};
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use time::Duration;
 
@@ -19,20 +24,53 @@ use time::Duration;
 ///   * forbid Domain — pinning the cookie to one host
 pub const SESSION_COOKIE_NAME: &str = "__Host-sid";
 
-/// Build a `Set-Cookie` header value that establishes a fresh session.
+/// Typed response-part for the BFF session cookie. Constructed by
+/// handlers and composed into a tuple response; `IntoResponseParts`
+/// renders the full attribute set and appends a single `Set-Cookie`
+/// header. Callers never see `Max-Age` arithmetic or `HeaderName`s.
+///
+/// ```ignore
+/// (StatusCode::OK, no_store(), SessionCookie::set(&sid, expires_at, now), Json(view))
+///     .into_response()
+/// ```
 #[must_use]
-pub fn build_set_session(value: &str, max_age_seconds: i64) -> HeaderValue {
-    render(&session_cookie(value, max_age_seconds))
+pub struct SessionCookie<'a> {
+    value: &'a str,
+    max_age_seconds: i64,
 }
 
-/// Build a `Set-Cookie` header value that clears the session.
-///
-/// Empty value + `Max-Age=0` evicts the cookie. We still emit every
-/// other attribute identically to the live cookie so a buggy browser
-/// never ends up with a cookie carrying weaker attrs than the original.
-#[must_use]
-pub fn build_clear_session() -> HeaderValue {
-    render(&session_cookie("", 0))
+impl<'a> SessionCookie<'a> {
+    /// Set the cookie to `sid` with `Max-Age = max(expires_at - now, 0)`.
+    /// `expires_at` and `now` are both absolute epoch seconds; the helper
+    /// turns them into the residual lifetime so callers can pass the
+    /// session record's `expires_at` directly without restating the
+    /// subtraction.
+    pub fn set(sid: &'a str, expires_at: i64, now: i64) -> Self {
+        Self {
+            value: sid,
+            max_age_seconds: expires_at.saturating_sub(now).max(0),
+        }
+    }
+
+    /// Clear the cookie. Empty value + `Max-Age=0`, every other attribute
+    /// identical to the live cookie so a buggy browser never ends up with
+    /// weaker attrs than the original.
+    pub fn clear() -> SessionCookie<'static> {
+        SessionCookie {
+            value: "",
+            max_age_seconds: 0,
+        }
+    }
+}
+
+impl IntoResponseParts for SessionCookie<'_> {
+    type Error = Infallible;
+
+    fn into_response_parts(self, mut res: ResponseParts) -> Result<ResponseParts, Self::Error> {
+        let value = render(&build_cookie(self.value, self.max_age_seconds));
+        res.headers_mut().append(header::SET_COOKIE, value);
+        Ok(res)
+    }
 }
 
 /// Read the BFF session cookie value from a single `Cookie` header.
@@ -75,10 +113,9 @@ fn unquote(s: &str) -> &str {
 }
 
 /// Construct a `Cookie` carrying the full attribute set mandated by
-/// `cpt-insightspec-nfr-bff-cookie-attrs`. Owned here as the only path
-/// that builds session cookies — every caller goes through
-/// `build_set_session` / `build_clear_session`.
-fn session_cookie(value: &str, max_age_seconds: i64) -> Cookie<'static> {
+/// `cpt-insightspec-nfr-bff-cookie-attrs`. Single source of truth for
+/// what makes a session cookie valid.
+fn build_cookie(value: &str, max_age_seconds: i64) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE_NAME, value.to_owned()))
         .http_only(true)
         .secure(true)
@@ -104,14 +141,31 @@ fn render(c: &Cookie<'_>) -> HeaderValue {
 mod tests {
     use super::*;
 
-    #[test]
-    fn set_session_header_carries_all_required_attrs() {
-        let v = build_set_session("opaque-value", 120);
-        let s = v.to_str().expect("ascii");
+    /// Round-trip a `SessionCookie` through the axum tuple-response
+    /// machinery and return the rendered `Set-Cookie` header string —
+    /// exactly what a handler's `(StatusCode, …, SessionCookie::…)`
+    /// would emit on the wire.
+    fn emit(c: SessionCookie<'_>) -> String {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        // `(StatusCode, IntoResponseParts, IntoResponse)` is axum's
+        // canonical "status + headers + body" shape; the `()` body keeps
+        // the test tight without bringing `Body::empty()` into scope.
+        let resp = (StatusCode::OK, c, ()).into_response();
+        resp.headers()
+            .get(header::SET_COOKIE)
+            .expect("set-cookie present")
+            .to_str()
+            .expect("ascii")
+            .to_owned()
+    }
 
+    #[test]
+    fn set_carries_all_required_attrs() {
+        let s = emit(SessionCookie::set("opaque-value", 220, 100));
         assert!(
             s.starts_with("__Host-sid=opaque-value"),
-            "name and value first",
+            "name + value first"
         );
         assert!(s.contains("Max-Age=120"));
         assert!(s.contains("Path=/"));
@@ -122,10 +176,8 @@ mod tests {
     }
 
     #[test]
-    fn clear_header_uses_max_age_zero_with_full_attrs() {
-        let v = build_clear_session();
-        let s = v.to_str().expect("ascii");
-
+    fn clear_uses_max_age_zero_with_full_attrs() {
+        let s = emit(SessionCookie::clear());
         assert!(s.starts_with("__Host-sid="));
         assert!(s.contains("Max-Age=0"));
         assert!(s.contains("Path=/"));
@@ -141,8 +193,7 @@ mod tests {
         // (or bumped the `cookie` crate to a version that emits attributes
         // in a different order). Either path needs a fresh security review
         // before the snapshot is updated.
-        let v = build_set_session("AAAA", 120);
-        let s = v.to_str().expect("ascii");
+        let s = emit(SessionCookie::set("AAAA", 220, 100));
         assert_eq!(
             s,
             "__Host-sid=AAAA; HttpOnly; SameSite=Strict; Secure; Path=/; Max-Age=120",
@@ -151,12 +202,20 @@ mod tests {
 
     #[test]
     fn snapshot_clear_session() {
-        let v = build_clear_session();
-        let s = v.to_str().expect("ascii");
+        let s = emit(SessionCookie::clear());
         assert_eq!(
             s,
             "__Host-sid=; HttpOnly; SameSite=Strict; Secure; Path=/; Max-Age=0",
         );
+    }
+
+    #[test]
+    fn set_clamps_negative_residual_to_zero() {
+        // `now` past `expires_at` — without the clamp, `Max-Age=-N` would
+        // be rendered (cookie crate accepts negative). We floor to 0 so the
+        // browser evicts immediately rather than holding a confused cookie.
+        let s = emit(SessionCookie::set("AAAA", 100, 500));
+        assert!(s.contains("Max-Age=0"));
     }
 
     #[test]
