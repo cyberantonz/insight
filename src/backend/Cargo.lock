@@ -2836,6 +2836,7 @@ dependencies = [
  "cf-grpc-hub",
  "cf-modkit",
  "cf-modkit-auth",
+ "cf-modkit-canonical-errors",
  "cf-modkit-macros",
  "cf-modkit-security 0.6.2",
  "cf-module-orchestrator",

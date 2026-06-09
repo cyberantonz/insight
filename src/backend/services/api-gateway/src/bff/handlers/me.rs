@@ -21,14 +21,17 @@ use crate::bff::errors::BffError;
 use crate::bff::handlers::{BffState, jittered_refresh_at, no_store};
 use crate::bff::session::{SessionView, TenantView, UserView};
 
+const NO_SESSION_REASON: &str = "no session";
+
 pub async fn me(
     State(state): State<Arc<BffState>>,
     headers: HeaderMap,
 ) -> Result<Response, BffError> {
     let st = state;
 
-    let sid = read_session_cookie(headers.get(header::COOKIE))
-        .ok_or(BffError::Unauthorized("no session cookie"))?;
+    let Some(sid) = read_session_cookie(headers.get(header::COOKIE)) else {
+        return Ok(unauthorized_clear_cookie());
+    };
 
     let Some(record) = st.store.get_session(&sid).await? else {
         return Ok(unauthorized_clear_cookie());
@@ -75,25 +78,16 @@ pub async fn me(
 }
 
 fn unauthorized_clear_cookie() -> Response {
-    let mut resp = (
-        StatusCode::UNAUTHORIZED,
+    // Compose: canonical `unauthenticated` envelope (status, problem+json
+    // body, type URI, reason) from `BffError`; layered with `no_store()`
+    // and `SessionCookie::clear()` so the browser drops the (possibly
+    // stale) `__Host-sid` cookie before the SPA redirects to /auth/login.
+    (
         no_store(),
         SessionCookie::clear(),
-        Json(serde_json::json!({
-            "type": "urn:insight:error:unauthorized",
-            "title": "Unauthorized",
-            "status": 401,
-            "detail": "no session"
-        })),
+        BffError::Unauthorized(NO_SESSION_REASON),
     )
-        .into_response();
-    // RFC 9457: problem+json content type. Override the `Content-Type:
-    // application/json` that `Json` set.
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/problem+json"),
-    );
-    resp
+        .into_response()
 }
 
 #[cfg(test)]
@@ -102,12 +96,12 @@ mod tests {
     use axum::body::to_bytes;
 
     #[tokio::test]
-    async fn unauthorized_clear_cookie_carries_clear_set_cookie_and_problem_ct() {
+    async fn unauthorized_clear_cookie_carries_clear_set_cookie_and_canonical_envelope() {
         let resp = unauthorized_clear_cookie();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             resp.headers().get(header::CONTENT_TYPE).expect("ct"),
-            "application/problem+json"
+            "application/problem+json",
         );
         let sc = resp
             .headers()
@@ -116,9 +110,15 @@ mod tests {
             .expect("set-cookie");
         assert!(sc.contains("Max-Age=0"));
         assert!(sc.contains("__Host-sid="));
+        assert!(sc.contains("SameSite=Strict"));
 
         let bytes = to_bytes(resp.into_body(), 4096).await.expect("body");
         let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(v["status"], 401);
+        assert_eq!(
+            v["type"], "gts://gts.cf.core.errors.err.v1~cf.core.err.unauthenticated.v1~",
+            "must use the constructorfabric canonical envelope",
+        );
+        assert_eq!(v["context"]["reason"], NO_SESSION_REASON);
     }
 }
