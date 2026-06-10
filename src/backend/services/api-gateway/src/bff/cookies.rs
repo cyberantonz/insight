@@ -36,7 +36,13 @@ pub const SESSION_COOKIE_NAME: &str = "__Host-sid";
 #[must_use]
 pub struct SessionCookie<'a> {
     value: &'a str,
-    max_age_seconds: i64,
+    /// Residual cookie lifetime, clamped to `[0, u32::MAX]` at the
+    /// construction boundary. The session's `expires_at - now`
+    /// subtraction is naturally `i64`, but the stored result is always
+    /// non-negative and bounded above by the absolute session lifetime
+    /// (≤ 24h per spec), so `u32` is the right shape — it eliminates the
+    /// "is this negative?" question downstream.
+    max_age_seconds: u32,
 }
 
 impl<'a> SessionCookie<'a> {
@@ -46,9 +52,11 @@ impl<'a> SessionCookie<'a> {
     /// session record's `expires_at` directly without restating the
     /// subtraction.
     pub fn set(sid: &'a str, expires_at: i64, now: i64) -> Self {
+        let residual_signed = expires_at.saturating_sub(now).max(0);
+        let max_age_seconds = u32::try_from(residual_signed).unwrap_or(u32::MAX);
         Self {
             value: sid,
-            max_age_seconds: expires_at.saturating_sub(now).max(0),
+            max_age_seconds,
         }
     }
 
@@ -115,13 +123,13 @@ fn unquote(s: &str) -> &str {
 /// Construct a `Cookie` carrying the full attribute set mandated by
 /// `cpt-insightspec-nfr-bff-cookie-attrs`. Single source of truth for
 /// what makes a session cookie valid.
-fn build_cookie(value: &str, max_age_seconds: i64) -> Cookie<'static> {
+fn build_cookie(value: &str, max_age_seconds: u32) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE_NAME, value.to_owned()))
         .http_only(true)
         .secure(true)
         .same_site(SameSite::Strict)
         .path("/")
-        .max_age(Duration::seconds(max_age_seconds))
+        .max_age(Duration::seconds(i64::from(max_age_seconds)))
         .build()
 }
 
