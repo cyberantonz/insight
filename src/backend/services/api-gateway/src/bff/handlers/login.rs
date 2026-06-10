@@ -41,7 +41,9 @@ pub async fn login(
     let oauth_nonce = new_nonce();
     let pkce = PkcePair::generate();
 
-    let auth_url = st.oidc.authorize_url(&oauth_state, &oauth_nonce, &pkce.verifier);
+    let auth_url = st
+        .oidc
+        .authorize_url(&oauth_state, &oauth_nonce, &pkce.verifier);
 
     login_state::store(
         &st.redis,
