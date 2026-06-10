@@ -36,6 +36,20 @@ const ALLOWED_ALGS: &[&str] = &["RS256", "RS384", "RS512", "ES256", "ES384", "Ed
 /// Matches the default leeway in upstream JWT libraries.
 const CLOCK_SKEW_SECONDS: i64 = 60;
 
+/// OIDC Core §3.1.2.2: the RP MUST validate that the discovery document's
+/// `issuer` matches the URL it was fetched from. Both sides are normalized
+/// by trimming a single trailing `/` before comparison.
+fn check_issuer_match(configured: &str, advertised: &str) -> Result<(), BffError> {
+    let expected = configured.trim_end_matches('/');
+    let got = advertised.trim_end_matches('/');
+    if expected != got {
+        return Err(BffError::Idp(format!(
+            "discovery issuer mismatch: expected `{expected}`, got `{got}`",
+        )));
+    }
+    Ok(())
+}
+
 /// Subset of the OIDC discovery document we consume.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -85,6 +99,7 @@ impl DiscoveryDoc {
                 "discovery doc missing required fields".into(),
             ));
         }
+        check_issuer_match(issuer_url, &doc.issuer)?;
         Ok(doc)
     }
 }
@@ -156,12 +171,20 @@ impl IdTokenClaims {
                 .and_then(serde_json::Value::as_i64)
                 .ok_or_else(|| BffError::Idp(format!("id_token claim `{k}` missing or not int")))
         };
-        let aud = match v.get("aud") {
+        let aud: Vec<String> = match v.get("aud") {
             Some(serde_json::Value::String(s)) => vec![s.clone()],
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|x| x.as_str().map(str::to_owned))
-                .collect(),
+            Some(serde_json::Value::Array(arr)) => {
+                if arr.is_empty() {
+                    return Err(BffError::Idp("id_token `aud` claim missing".into()));
+                }
+                arr.iter()
+                    .map(|x| {
+                        x.as_str().map(str::to_owned).ok_or_else(|| {
+                            BffError::Idp("id_token `aud` entry is not a string".into())
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
             _ => return Err(BffError::Idp("id_token `aud` claim missing".into())),
         };
         let opt_int = |k: &str| -> Option<i64> { v.get(k).and_then(serde_json::Value::as_i64) };
@@ -551,6 +574,53 @@ mod tests {
     fn id_token_claims_reject_missing_aud() {
         let v = serde_json::json!({"iss": "i", "sub": "s", "exp": 1});
         assert!(IdTokenClaims::from_value(&v).is_err());
+    }
+
+    #[test]
+    fn id_token_claims_reject_aud_array_with_non_string_entry() {
+        let v = serde_json::json!({
+            "iss": "i", "sub": "s", "exp": 1,
+            "aud": ["client-id", 123],
+        });
+        let err = IdTokenClaims::from_value(&v).expect_err("must reject");
+        match err {
+            BffError::Idp(msg) => {
+                assert!(msg.contains("aud"), "got `{msg}`");
+                assert!(msg.contains("not a string"), "got `{msg}`");
+            }
+            _ => panic!("expected BffError::Idp, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn id_token_claims_reject_empty_aud_array() {
+        let v = serde_json::json!({"iss": "i", "sub": "s", "aud": [], "exp": 1});
+        assert!(IdTokenClaims::from_value(&v).is_err());
+    }
+
+    #[test]
+    fn check_issuer_match_accepts_equal_normalized() {
+        check_issuer_match("https://idp.example.com", "https://idp.example.com")
+            .expect("equal must pass");
+        // Trailing slash tolerated on either side.
+        check_issuer_match("https://idp.example.com/", "https://idp.example.com")
+            .expect("trailing slash on configured must pass");
+        check_issuer_match("https://idp.example.com", "https://idp.example.com/")
+            .expect("trailing slash on advertised must pass");
+    }
+
+    #[test]
+    fn check_issuer_match_rejects_foreign_issuer() {
+        let err = check_issuer_match("https://idp.example.com", "https://attacker.example.com")
+            .expect_err("must reject");
+        match err {
+            BffError::Idp(msg) => {
+                assert!(msg.contains("issuer mismatch"), "got `{msg}`");
+                assert!(msg.contains("idp.example.com"), "got `{msg}`");
+                assert!(msg.contains("attacker.example.com"), "got `{msg}`");
+            }
+            _ => panic!("expected BffError::Idp, got {err:?}"),
+        }
     }
 
     #[test]
