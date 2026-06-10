@@ -1,397 +1,133 @@
-//! Minimal OIDC confidential client.
+//! OIDC confidential client, backed by the `openidconnect` crate.
 //!
-//! Drives the authorization-code-with-PKCE flow without depending on the
-//! `openidconnect` crate, which pins reqwest versions that conflict with
-//! the rest of the workspace. We only need:
-//!   * discovery doc fetch (cached at module init)
-//!   * authorize URL builder (state, nonce, PKCE)
-//!   * token exchange (POST `token_endpoint`)
-//!   * ID token validation, delegated to `modkit_auth::JwksKeyProvider`
-//!     (signature) plus our own `iss`/`aud`/`nonce`/`exp` checks.
+//! Thin adapter around `openidconnect 4`: discovery, authorize-URL
+//! builder, code-with-PKCE exchange, and ID-token verification
+//! (signature + `iss`/`aud`/`nonce`/`exp`/`nbf` + alg allow-list) all
+//! live in the upstream crate. The local surface mirrors what the
+//! previous hand-rolled module exposed so callers
+//! (`handlers::login`, `handlers::callback`, `module`) didn't change.
 //!
-//! Anything beyond that — refresh-token use, dynamic client registration,
-//! UserInfo, etc. — is out of scope for v1.
+//! Anything beyond the authorization-code-with-PKCE flow — refresh
+//! tokens, dynamic client registration, UserInfo — is out of scope
+//! for Phase 1. RP-initiated logout will be wired through the crate's
+//! `ProviderMetadataWithLogout` extension when the `/auth/logout`
+//! handler lands.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use modkit_auth::JwksKeyProvider;
-use modkit_auth::traits::KeyProvider;
-use rand::RngCore;
-use rand::rngs::OsRng;
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
+use openidconnect::core::{
+    CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
+    CoreGenderClaim, CoreJsonWebKey, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
+    CoreProviderMetadata, CoreRevocableToken, CoreTokenIntrospectionResponse, CoreTokenType,
+};
+use openidconnect::{
+    AdditionalClaims, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EmptyExtraTokenFields,
+    EndpointMaybeSet, EndpointNotSet, EndpointSet, IdTokenFields, IssuerUrl, Nonce,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RevocationErrorResponseType, Scope,
+    StandardErrorResponse, StandardTokenResponse, TokenResponse, reqwest,
+};
+use serde::{Deserialize, Serialize};
 
 use crate::bff::errors::BffError;
-use crate::bff::handlers::unix_now;
 
-/// Algorithms accepted on the ID token JWT header. Locked down to the
-/// asymmetric set OIDC providers actually use; rejecting `HS*` closes
-/// the JWKS-as-HMAC-secret confusion vector, rejecting `none` is
-/// belt-and-braces (the JWT crate already rejects it on parse).
-const ALLOWED_ALGS: &[&str] = &["RS256", "RS384", "RS512", "ES256", "ES384", "EdDSA"];
-
-/// Clock skew tolerance for `exp` / `nbf` checks on the ID token.
-/// Matches the default leeway in upstream JWT libraries.
-const CLOCK_SKEW_SECONDS: i64 = 60;
-
-/// OIDC Core §3.1.2.2: the RP MUST validate that the discovery document's
-/// `issuer` matches the URL it was fetched from. Both sides are normalized
-/// by trimming a single trailing `/` before comparison.
-fn check_issuer_match(configured: &str, advertised: &str) -> Result<(), BffError> {
-    let expected = configured.trim_end_matches('/');
-    let got = advertised.trim_end_matches('/');
-    if expected != got {
-        return Err(BffError::Idp(format!(
-            "discovery issuer mismatch: expected `{expected}`, got `{got}`",
-        )));
-    }
-    Ok(())
+/// Asymmetric signing algorithms the BFF accepts on ID tokens. HMAC
+/// (`HS*`) is excluded to close the JWKS-as-shared-secret confusion
+/// vector; `none` is excluded for the obvious reason. Enforced via the
+/// verifier's `set_allowed_algs` knob inside `exchange_code`.
+fn allowed_signing_algs() -> Vec<CoreJwsSigningAlgorithm> {
+    vec![
+        CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+        CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha384,
+        CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha512,
+        CoreJwsSigningAlgorithm::EcdsaP256Sha256,
+        CoreJwsSigningAlgorithm::EcdsaP384Sha384,
+        CoreJwsSigningAlgorithm::EdDsa,
+    ]
 }
 
-/// Subset of the OIDC discovery document we consume.
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct DiscoveryDoc {
-    pub issuer: String,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    pub jwks_uri: String,
-    /// Optional: present iff the IdP supports RP-initiated logout.
-    /// Used by Phase 2's `/auth/logout`.
-    #[serde(default)]
-    pub end_session_endpoint: Option<String>,
+/// Extra ID-token claims the BFF cares about beyond the OIDC standard
+/// set — namely `sid`, used by back-channel logout to map IdP sessions
+/// to local ones.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BffAdditionalClaims {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
 }
 
-impl DiscoveryDoc {
-    /// Fetch the discovery doc. Used once at module init; not on the hot path.
-    pub async fn fetch(issuer_url: &str, http_timeout: Duration) -> Result<Self, BffError> {
-        let url = format!(
-            "{}/.well-known/openid-configuration",
-            issuer_url.trim_end_matches('/')
-        );
-        let client = reqwest::Client::builder()
-            .timeout(http_timeout)
-            .build()
-            .map_err(|e| BffError::Internal(anyhow::anyhow!("reqwest builder: {e}")))?;
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| BffError::Idp(format!("discovery fetch: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(BffError::Idp(format!(
-                "discovery doc returned status {}",
-                resp.status()
-            )));
-        }
-        let doc: DiscoveryDoc = resp
-            .json()
-            .await
-            .map_err(|e| BffError::Idp(format!("discovery parse: {e}")))?;
-        if doc.issuer.is_empty()
-            || doc.authorization_endpoint.is_empty()
-            || doc.token_endpoint.is_empty()
-            || doc.jwks_uri.is_empty()
-        {
-            return Err(BffError::Idp(
-                "discovery doc missing required fields".into(),
-            ));
-        }
-        check_issuer_match(issuer_url, &doc.issuer)?;
-        Ok(doc)
-    }
-}
+impl AdditionalClaims for BffAdditionalClaims {}
 
-/// PKCE verifier + challenge pair.
+type BffIdTokenFields = IdTokenFields<
+    BffAdditionalClaims,
+    EmptyExtraTokenFields,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJwsSigningAlgorithm,
+>;
+
+type BffTokenResponse = StandardTokenResponse<BffIdTokenFields, CoreTokenType>;
+
+/// Concrete client type after discovery + redirect URI are set. The
+/// typestate parameters mirror what `from_provider_metadata` produces:
+/// auth URL is always supplied by discovery (`EndpointSet`), token and
+/// userinfo URLs may or may not be (`EndpointMaybeSet`), and the rest
+/// stay `NotSet` since the BFF never speaks device-flow, introspection,
+/// or revocation.
+type BffOidcClient = openidconnect::Client<
+    BffAdditionalClaims,
+    CoreAuthDisplay,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJsonWebKey,
+    CoreAuthPrompt,
+    StandardErrorResponse<CoreErrorResponseType>,
+    BffTokenResponse,
+    CoreTokenIntrospectionResponse,
+    CoreRevocableToken,
+    StandardErrorResponse<RevocationErrorResponseType>,
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointMaybeSet,
+    EndpointMaybeSet,
+>;
+
+/// PKCE verifier. The crate deliberately makes
+/// `PkceCodeChallenge` non-`Clone` and constructible only from a
+/// verifier, so the BFF persists the verifier (in
+/// `bff:login_state:{state}`) and re-derives the challenge inside
+/// `authorize_url` each time. Two-field shape is gone; the public
+/// field is now `verifier` only.
 pub struct PkcePair {
     pub verifier: String,
-    pub challenge: String,
 }
 
 impl PkcePair {
-    /// Generate a fresh verifier (32 random bytes → 43-char base64url) and
-    /// derive its S256 challenge.
     #[must_use]
     pub fn generate() -> Self {
-        let mut buf = [0u8; 32];
-        OsRng.fill_bytes(&mut buf);
-        let verifier = URL_SAFE_NO_PAD.encode(buf);
-        let mut h = Sha256::new();
-        h.update(verifier.as_bytes());
-        let challenge = URL_SAFE_NO_PAD.encode(h.finalize());
+        let (_challenge, verifier) = PkceCodeChallenge::new_random_sha256();
         Self {
-            verifier,
-            challenge,
+            verifier: verifier.secret().clone(),
         }
     }
 }
 
 /// Validated ID token claims surfaced to the rest of the BFF.
+///
+/// Projection over `openidconnect::IdTokenClaims<BffAdditionalClaims,
+/// CoreGenderClaim>`: the crate's claims type is verbose (locale-
+/// aware names, generic over key/alg/claim types) and verifier-bound,
+/// so we collapse it to the small set of values the handlers actually
+/// consume. Every value here has already cleared the crate's verifier
+/// (signature + iss + aud + nonce + exp/nbf + alg allow-list).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IdTokenClaims {
     pub iss: String,
     pub sub: String,
-    pub aud: Vec<String>,
-    pub exp: i64,
-    /// Optional per RFC 7519. We stop short of treating absence as an
-    /// error (some IdPs really don't emit it) but never substitute zero
-    /// for missing — `None` means "unknown".
-    pub iat: Option<i64>,
-    pub nbf: Option<i64>,
-    pub nonce: Option<String>,
     pub sid: Option<String>,
-    /// Authorized party (OIDC Core §3.1.3.7 step 5). Required when `aud`
-    /// is multi-valued.
-    pub azp: Option<String>,
     pub email: Option<String>,
     pub name: Option<String>,
-}
-
-impl IdTokenClaims {
-    fn from_value(value: &serde_json::Value) -> Result<Self, BffError> {
-        let v = value
-            .as_object()
-            .ok_or_else(|| BffError::Idp("id_token claims is not an object".into()))?;
-        let str_field = |k: &str| -> Result<String, BffError> {
-            v.get(k)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| BffError::Idp(format!("id_token claim `{k}` missing")))
-        };
-        let opt_str = |k: &str| -> Option<String> {
-            v.get(k)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        };
-        let int_field = |k: &str| -> Result<i64, BffError> {
-            v.get(k)
-                .and_then(serde_json::Value::as_i64)
-                .ok_or_else(|| BffError::Idp(format!("id_token claim `{k}` missing or not int")))
-        };
-        let aud: Vec<String> = match v.get("aud") {
-            Some(serde_json::Value::String(s)) => vec![s.clone()],
-            Some(serde_json::Value::Array(arr)) => {
-                if arr.is_empty() {
-                    return Err(BffError::Idp("id_token `aud` claim missing".into()));
-                }
-                arr.iter()
-                    .map(|x| {
-                        x.as_str().map(str::to_owned).ok_or_else(|| {
-                            BffError::Idp("id_token `aud` entry is not a string".into())
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            }
-            _ => return Err(BffError::Idp("id_token `aud` claim missing".into())),
-        };
-        let opt_int = |k: &str| -> Option<i64> { v.get(k).and_then(serde_json::Value::as_i64) };
-        Ok(Self {
-            iss: str_field("iss")?,
-            sub: str_field("sub")?,
-            aud,
-            exp: int_field("exp")?,
-            iat: opt_int("iat"),
-            nbf: opt_int("nbf"),
-            nonce: opt_str("nonce"),
-            sid: opt_str("sid"),
-            azp: opt_str("azp"),
-            email: opt_str("email"),
-            name: opt_str("name").or_else(|| opt_str("preferred_username")),
-        })
-    }
-}
-
-/// Confidential OIDC client.
-#[derive(Clone)]
-pub struct OidcClient {
-    discovery: DiscoveryDoc,
-    client_id: String,
-    client_secret: String,
-    redirect_uri: String,
-    expected_audience: String,
-    scopes: Vec<String>,
-    http: reqwest::Client,
-    jwks: Arc<JwksKeyProvider>,
-}
-
-impl OidcClient {
-    /// Build a new client. Performs discovery + initial JWKS fetch.
-    pub async fn new(
-        issuer_url: &str,
-        client_id: &str,
-        client_secret: &str,
-        redirect_uri: &str,
-        scopes: Vec<String>,
-        audience: Option<&str>,
-    ) -> Result<Self, BffError> {
-        let discovery = DiscoveryDoc::fetch(issuer_url, Duration::from_secs(10)).await?;
-        let jwks = Arc::new(
-            JwksKeyProvider::new(discovery.jwks_uri.clone())
-                .map_err(|e| BffError::Internal(anyhow::anyhow!("jwks provider: {e}")))?
-                .with_refresh_interval(Duration::from_hours(1)),
-        );
-        // Initial fetch — not fatal if it fails (the IdP may be briefly
-        // unreachable at boot); on-demand refresh will retry.
-        if let Err(e) = jwks.refresh_keys().await {
-            tracing::warn!(error = %e, "initial JWKS fetch failed; will retry on demand");
-        }
-
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| BffError::Internal(anyhow::anyhow!("reqwest builder: {e}")))?;
-
-        Ok(Self {
-            discovery,
-            client_id: client_id.to_owned(),
-            client_secret: client_secret.to_owned(),
-            redirect_uri: redirect_uri.to_owned(),
-            expected_audience: audience.unwrap_or(client_id).to_owned(),
-            scopes,
-            http,
-            jwks,
-        })
-    }
-
-    /// Phase-2 access for `/auth/logout` (id_token_hint, end_session_url).
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn discovery(&self) -> &DiscoveryDoc {
-        &self.discovery
-    }
-
-    /// Build the authorize URL the browser is redirected to.
-    pub fn authorize_url(
-        &self,
-        state: &str,
-        nonce: &str,
-        pkce_challenge: &str,
-    ) -> Result<String, BffError> {
-        let mut url = url::Url::parse(&self.discovery.authorization_endpoint)
-            .map_err(|e| BffError::Internal(anyhow::anyhow!("invalid auth endpoint: {e}")))?;
-        url.query_pairs_mut()
-            .append_pair("response_type", "code")
-            .append_pair("client_id", &self.client_id)
-            .append_pair("redirect_uri", &self.redirect_uri)
-            .append_pair("scope", &self.scopes.join(" "))
-            .append_pair("state", state)
-            .append_pair("nonce", nonce)
-            .append_pair("code_challenge", pkce_challenge)
-            .append_pair("code_challenge_method", "S256");
-        Ok(url.to_string())
-    }
-
-    /// Exchange a callback `code` for tokens. Returns the raw `id_token`
-    /// (so we can keep it for `id_token_hint` later) plus the validated
-    /// claims.
-    pub async fn exchange_code(
-        &self,
-        code: &str,
-        verifier: &str,
-        expected_nonce: &str,
-    ) -> Result<TokenExchange, BffError> {
-        let resp = self
-            .http
-            .post(&self.discovery.token_endpoint)
-            .basic_auth(&self.client_id, Some(&self.client_secret))
-            .form(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("redirect_uri", self.redirect_uri.as_str()),
-                ("code_verifier", verifier),
-                // client_id repeated in body for IdPs that demand it even
-                // alongside Basic auth (Keycloak, some Auth0 setups).
-                ("client_id", self.client_id.as_str()),
-            ])
-            .send()
-            .await
-            .map_err(|e| BffError::Idp(format!("token endpoint: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            // Pull `error` / `error_description` out of a JSON body if the
-            // IdP supplied them — that's the actionable signal. Don't echo
-            // the raw body into the response or logs (could carry user
-            // input or partial grant data).
-            let body_text = resp.text().await.unwrap_or_default();
-            let parsed = serde_json::from_str::<TokenError>(&body_text).ok();
-            let summary = parsed.as_ref().map_or_else(
-                || status.to_string(),
-                |e| {
-                    format!(
-                        "{} ({})",
-                        e.error,
-                        e.error_description.as_deref().unwrap_or("")
-                    )
-                },
-            );
-            tracing::warn!(
-                status = %status,
-                error = %parsed.as_ref().map_or("", |e| e.error.as_str()),
-                "token endpoint non-success",
-            );
-            return Err(BffError::Idp(format!("token endpoint: {summary}")));
-        }
-
-        let body: TokenResponse = resp
-            .json()
-            .await
-            .map_err(|e| BffError::Idp(format!("token response parse: {e}")))?;
-
-        let id_token = body
-            .id_token
-            .ok_or_else(|| BffError::Idp("token response missing id_token".into()))?;
-
-        // Algorithm allow-list — guard against alg-confusion / `none`. We
-        // peek at the JWT header before delegating signature verification
-        // to the JWKS provider, since the provider does not enforce an
-        // allow-list itself.
-        verify_alg_against_allowlist(&id_token)?;
-
-        // Signature check via JWKS provider. The provider validates the
-        // signature only — `exp`/`nbf`/`iss`/`aud`/`nonce` are this BFF's
-        // responsibility (see `validate_id_token_claims`).
-        let (_header, claims_value) = self
-            .jwks
-            .validate_and_decode(&id_token)
-            .await
-            .map_err(|e| BffError::Idp(format!("id_token validate: {e}")))?;
-
-        let claims = IdTokenClaims::from_value(&claims_value)?;
-        let now = unix_now();
-        validate_id_token_claims(
-            &claims,
-            &self.discovery.issuer,
-            &self.expected_audience,
-            &self.client_id,
-            expected_nonce,
-            now,
-        )?;
-
-        Ok(TokenExchange { id_token, claims })
-    }
-
-    /// Build the RP-initiated logout URL. Returns `None` if the IdP did
-    /// not advertise an `end_session_endpoint`. Phase 2's `/auth/logout`.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn end_session_url(
-        &self,
-        id_token_hint: &str,
-        post_logout_redirect: &str,
-    ) -> Option<String> {
-        let endpoint = self.discovery.end_session_endpoint.as_ref()?;
-        let mut url = url::Url::parse(endpoint).ok()?;
-        url.query_pairs_mut()
-            .append_pair("id_token_hint", id_token_hint)
-            .append_pair("post_logout_redirect_uri", post_logout_redirect)
-            .append_pair("client_id", &self.client_id);
-        Some(url.to_string())
-    }
 }
 
 /// Successful token-exchange result.
@@ -400,100 +136,164 @@ pub struct TokenExchange {
     pub claims: IdTokenClaims,
 }
 
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    #[serde(default)]
-    id_token: Option<String>,
+/// Confidential OIDC client.
+#[derive(Clone)]
+pub struct OidcClient {
+    client: Arc<BffOidcClient>,
+    http: reqwest::Client,
+    metadata: CoreProviderMetadata,
+    /// Optional explicit audience override. `None` falls back to the
+    /// crate verifier's default (matches `client_id`).
+    expected_audience: Option<String>,
+    scopes: Vec<Scope>,
 }
 
-/// OAuth 2.0 / OIDC error response shape (RFC 6749 §5.2).
-#[derive(Debug, Deserialize)]
-struct TokenError {
-    error: String,
-    #[serde(default)]
-    error_description: Option<String>,
-}
+impl OidcClient {
+    /// Build a new client. Performs discovery; the JWKS arrives as
+    /// part of the provider metadata and stays cached inside the
+    /// crate's client for the duration of the process.
+    pub async fn new(
+        issuer_url: &str,
+        client_id: &str,
+        client_secret: &str,
+        redirect_uri: &str,
+        scopes: Vec<String>,
+        audience: Option<&str>,
+    ) -> Result<Self, BffError> {
+        let http = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_secs(15))
+            // Mitigation called out by the openidconnect docs: following
+            // 3xx redirects on token/userinfo/jwks fetches opens SSRF
+            // against the provider's hostname.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| BffError::Internal(anyhow::anyhow!("reqwest builder: {e}")))?;
 
-/// Decode the JWT header without verifying signature, and reject any
-/// algorithm not in `ALLOWED_ALGS`. This closes the alg-confusion family:
-/// `none`, `HS256`-with-RSA-pubkey-as-shared-secret, downgrade games.
-fn verify_alg_against_allowlist(token: &str) -> Result<(), BffError> {
-    // header is the first dot-separated segment, base64url-encoded JSON.
-    let header_b64 = token
-        .split('.')
-        .next()
-        .ok_or_else(|| BffError::Idp("id_token has no header".into()))?;
-    let raw = URL_SAFE_NO_PAD
-        .decode(header_b64)
-        .map_err(|e| BffError::Idp(format!("id_token header decode: {e}")))?;
-    let header: serde_json::Value = serde_json::from_slice(&raw)
-        .map_err(|e| BffError::Idp(format!("id_token header parse: {e}")))?;
-    let alg = header
-        .get("alg")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| BffError::Idp("id_token header missing alg".into()))?;
-    if !ALLOWED_ALGS.contains(&alg) {
-        return Err(BffError::Idp(format!(
-            "id_token alg `{alg}` not in allow-list"
-        )));
-    }
-    Ok(())
-}
+        let issuer = IssuerUrl::new(issuer_url.to_owned())
+            .map_err(|e| BffError::Idp(format!("invalid issuer_url: {e}")))?;
+        let metadata = CoreProviderMetadata::discover_async(issuer, &http)
+            .await
+            .map_err(|e| BffError::Idp(format!("discovery failed: {e}")))?;
 
-/// Validate iss/aud/nonce/exp/nbf/azp on a parsed `IdTokenClaims`.
-///
-/// Pulled out of `exchange_code` so it's directly testable with a fake
-/// `IdTokenClaims` and a fixed `now`, no IdP needed.
-///
-/// Per OIDC Core §3.1.3.7:
-///   * `iss` must match the configured issuer exactly.
-///   * `aud` must contain the expected audience.
-///   * If `aud` is multi-valued AND `azp` is present, `azp` must equal
-///     the client_id.
-///   * `nonce` must match what the BFF stored at /auth/login time.
-///   * `exp` must be in the future (with clock skew leeway).
-///   * `nbf`, if present, must not be in the future (with leeway).
-fn validate_id_token_claims(
-    claims: &IdTokenClaims,
-    expected_issuer: &str,
-    expected_audience: &str,
-    client_id: &str,
-    expected_nonce: &str,
-    now: i64,
-) -> Result<(), BffError> {
-    if claims.iss != expected_issuer {
-        return Err(BffError::Idp("id_token iss mismatch".into()));
+        let redirect = RedirectUrl::new(redirect_uri.to_owned())
+            .map_err(|e| BffError::Internal(anyhow::anyhow!("invalid redirect_uri: {e}")))?;
+
+        let client: BffOidcClient = openidconnect::Client::from_provider_metadata(
+            metadata.clone(),
+            ClientId::new(client_id.to_owned()),
+            Some(ClientSecret::new(client_secret.to_owned())),
+        )
+        .set_redirect_uri(redirect);
+
+        Ok(Self {
+            client: Arc::new(client),
+            http,
+            metadata,
+            expected_audience: audience.map(str::to_owned),
+            scopes: scopes.into_iter().map(Scope::new).collect(),
+        })
     }
-    if !claims.aud.iter().any(|a| a == expected_audience) {
-        return Err(BffError::Idp("id_token aud mismatch".into()));
+
+    /// Phase-2 access for `/auth/logout` (id_token_hint, end_session_url).
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn metadata(&self) -> &CoreProviderMetadata {
+        &self.metadata
     }
-    // §3.1.3.7 step 5: if multiple audiences, azp MUST be present and equal client_id.
-    if claims.aud.len() > 1 {
-        match claims.azp.as_deref() {
-            Some(azp) if azp == client_id => {}
-            Some(_) => {
-                return Err(BffError::Idp("id_token azp mismatch".into()));
-            }
-            None => {
-                return Err(BffError::Idp(
-                    "id_token has multiple audiences but no azp".into(),
-                ));
-            }
+
+    /// Build the authorize URL the browser is redirected to. State and
+    /// nonce are generated by the BFF (so they can be persisted
+    /// alongside the PKCE verifier in Redis) and supplied here; the
+    /// crate wraps them in `CsrfToken` / `Nonce` newtypes and stitches
+    /// them onto the URL. The PKCE challenge is derived from the
+    /// verifier per `from_code_verifier_sha256`.
+    #[must_use]
+    pub fn authorize_url(&self, state: &str, nonce: &str, pkce_verifier: &str) -> String {
+        let state_owned = state.to_owned();
+        let nonce_owned = nonce.to_owned();
+        let verifier = PkceCodeVerifier::new(pkce_verifier.to_owned());
+        let challenge = PkceCodeChallenge::from_code_verifier_sha256(&verifier);
+
+        let mut builder = self.client.authorize_url(
+            CoreAuthenticationFlow::AuthorizationCode,
+            move || CsrfToken::new(state_owned.clone()),
+            move || Nonce::new(nonce_owned.clone()),
+        );
+        for scope in &self.scopes {
+            builder = builder.add_scope(scope.clone());
         }
+        let (url, _csrf, _nonce) = builder.set_pkce_challenge(challenge).url();
+        url.to_string()
     }
-    match claims.nonce.as_deref() {
-        Some(n) if n == expected_nonce => {}
-        _ => return Err(BffError::Idp("id_token nonce mismatch".into())),
+
+    /// Exchange a callback `code` for tokens. Returns the raw
+    /// `id_token` (so callers can keep it for `id_token_hint` in
+    /// RP-initiated logout) plus the verified claims.
+    pub async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        expected_nonce: &str,
+    ) -> Result<TokenExchange, BffError> {
+        let token_response = self
+            .client
+            .exchange_code(AuthorizationCode::new(code.to_owned()))
+            .map_err(|e| BffError::Idp(format!("exchange_code build: {e}")))?
+            .set_pkce_verifier(PkceCodeVerifier::new(verifier.to_owned()))
+            .request_async(&self.http)
+            .await
+            .map_err(|e| BffError::Idp(format!("token endpoint: {e}")))?;
+
+        let id_token = token_response
+            .id_token()
+            .ok_or_else(|| BffError::Idp("token response missing id_token".into()))?
+            .clone();
+
+        let mut verifier_cfg = self
+            .client
+            .id_token_verifier()
+            .set_allowed_algs(allowed_signing_algs());
+        if let Some(aud) = self.expected_audience.clone() {
+            verifier_cfg = verifier_cfg.set_other_audience_verifier_fn(move |a| a.as_str() == aud);
+        }
+
+        let nonce = Nonce::new(expected_nonce.to_owned());
+        let claims = id_token
+            .claims(&verifier_cfg, &nonce)
+            .map_err(|e| BffError::Idp(format!("id_token validate: {e}")))?;
+
+        let projected = project_claims(claims);
+
+        Ok(TokenExchange {
+            id_token: id_token.to_string(),
+            claims: projected,
+        })
     }
-    if claims.exp <= now.saturating_sub(CLOCK_SKEW_SECONDS) {
-        return Err(BffError::Idp("id_token expired".into()));
+}
+
+fn project_claims(
+    c: &openidconnect::IdTokenClaims<BffAdditionalClaims, CoreGenderClaim>,
+) -> IdTokenClaims {
+    // Prefer the unlocalized `name`, fall back to the first localized
+    // entry, then to `preferred_username`. The session record only ever
+    // stores one display string, so flattening here keeps callers
+    // unaware of `LocalizedClaim`.
+    let name = c
+        .name()
+        .and_then(|lc| {
+            lc.get(None)
+                .map(|n| n.as_str().to_owned())
+                .or_else(|| lc.iter().next().map(|(_, n)| n.as_str().to_owned()))
+        })
+        .or_else(|| c.preferred_username().map(|p| p.as_str().to_owned()));
+
+    IdTokenClaims {
+        iss: c.issuer().as_str().to_owned(),
+        sub: c.subject().as_str().to_owned(),
+        sid: c.additional_claims().sid.clone(),
+        email: c.email().map(|e| e.as_str().to_owned()),
+        name,
     }
-    if let Some(nbf) = claims.nbf
-        && nbf > now.saturating_add(CLOCK_SKEW_SECONDS)
-    {
-        return Err(BffError::Idp("id_token not yet valid (nbf)".into()));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -501,326 +301,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pkce_pair_uses_url_safe_no_pad() {
+    fn pkce_verifier_is_url_safe_no_pad() {
         let p = PkcePair::generate();
-        assert_eq!(p.verifier.len(), 43);
-        assert_eq!(p.challenge.len(), 43);
+        assert!(!p.verifier.is_empty());
         assert!(!p.verifier.contains('='));
-        assert!(!p.challenge.contains('='));
-        assert!(!p.challenge.contains('+'));
-        assert!(!p.challenge.contains('/'));
+        assert!(!p.verifier.contains('+'));
+        assert!(!p.verifier.contains('/'));
     }
 
     #[test]
-    fn pkce_pair_challenge_matches_s256_of_verifier() {
-        let p = PkcePair::generate();
-        let mut h = Sha256::new();
-        h.update(p.verifier.as_bytes());
-        let expected = URL_SAFE_NO_PAD.encode(h.finalize());
-        assert_eq!(p.challenge, expected);
-    }
-
-    #[test]
-    fn pkce_pair_verifier_is_random() {
+    fn pkce_verifier_is_random() {
         let a = PkcePair::generate();
         let b = PkcePair::generate();
         assert_ne!(a.verifier, b.verifier);
     }
 
     #[test]
-    fn id_token_claims_parse_minimal() {
-        let v = serde_json::json!({
-            "iss": "https://idp/",
-            "sub": "sub-1",
-            "aud": "client-id",
-            "exp": 1_700_000_000_i64,
-            "nonce": "abc",
-        });
-        let c = IdTokenClaims::from_value(&v).expect("parse");
-        assert_eq!(c.iss, "https://idp/");
-        assert_eq!(c.sub, "sub-1");
-        assert_eq!(c.aud, vec!["client-id".to_owned()]);
-        assert_eq!(c.exp, 1_700_000_000);
-        assert_eq!(c.nonce.as_deref(), Some("abc"));
+    fn additional_claims_round_trips_sid() {
+        let json = serde_json::json!({"sid": "abc123"});
+        let parsed: BffAdditionalClaims = serde_json::from_value(json).expect("parse");
+        assert_eq!(parsed.sid.as_deref(), Some("abc123"));
+        let rendered = serde_json::to_value(&parsed).expect("ser");
+        assert_eq!(rendered, serde_json::json!({"sid": "abc123"}));
     }
 
     #[test]
-    fn id_token_claims_parse_aud_array() {
-        let v = serde_json::json!({
-            "iss": "i",
-            "sub": "s",
-            "aud": ["a", "b"],
-            "exp": 1_i64,
-        });
-        let c = IdTokenClaims::from_value(&v).expect("parse");
-        assert_eq!(c.aud, vec!["a".to_owned(), "b".to_owned()]);
-    }
-
-    #[test]
-    fn id_token_claims_reject_missing_iss() {
-        let v = serde_json::json!({"sub": "s", "aud": "x", "exp": 1});
-        assert!(IdTokenClaims::from_value(&v).is_err());
-    }
-
-    #[test]
-    fn id_token_claims_reject_missing_aud() {
-        let v = serde_json::json!({"iss": "i", "sub": "s", "exp": 1});
-        assert!(IdTokenClaims::from_value(&v).is_err());
-    }
-
-    #[test]
-    fn id_token_claims_reject_aud_array_with_non_string_entry() {
-        let v = serde_json::json!({
-            "iss": "i", "sub": "s", "exp": 1,
-            "aud": ["client-id", 123],
-        });
-        let err = IdTokenClaims::from_value(&v).expect_err("must reject");
-        match err {
-            BffError::Idp(msg) => {
-                assert!(msg.contains("aud"), "got `{msg}`");
-                assert!(msg.contains("not a string"), "got `{msg}`");
-            }
-            _ => panic!("expected BffError::Idp, got {err:?}"),
-        }
-    }
-
-    #[test]
-    fn id_token_claims_reject_empty_aud_array() {
-        let v = serde_json::json!({"iss": "i", "sub": "s", "aud": [], "exp": 1});
-        assert!(IdTokenClaims::from_value(&v).is_err());
-    }
-
-    #[test]
-    fn check_issuer_match_accepts_equal_normalized() {
-        check_issuer_match("https://idp.example.com", "https://idp.example.com")
-            .expect("equal must pass");
-        // Trailing slash tolerated on either side.
-        check_issuer_match("https://idp.example.com/", "https://idp.example.com")
-            .expect("trailing slash on configured must pass");
-        check_issuer_match("https://idp.example.com", "https://idp.example.com/")
-            .expect("trailing slash on advertised must pass");
-    }
-
-    #[test]
-    fn check_issuer_match_rejects_foreign_issuer() {
-        let err = check_issuer_match("https://idp.example.com", "https://attacker.example.com")
-            .expect_err("must reject");
-        match err {
-            BffError::Idp(msg) => {
-                assert!(msg.contains("issuer mismatch"), "got `{msg}`");
-                assert!(msg.contains("idp.example.com"), "got `{msg}`");
-                assert!(msg.contains("attacker.example.com"), "got `{msg}`");
-            }
-            _ => panic!("expected BffError::Idp, got {err:?}"),
-        }
-    }
-
-    #[test]
-    fn id_token_claims_extract_email_and_name() {
-        let v = serde_json::json!({
-            "iss": "i", "sub": "s", "aud": "x", "exp": 1,
-            "email": "a@b.com", "name": "Alice",
-        });
-        let c = IdTokenClaims::from_value(&v).expect("parse");
-        assert_eq!(c.email.as_deref(), Some("a@b.com"));
-        assert_eq!(c.name.as_deref(), Some("Alice"));
-    }
-
-    #[test]
-    fn id_token_claims_falls_back_to_preferred_username() {
-        let v = serde_json::json!({
-            "iss": "i", "sub": "s", "aud": "x", "exp": 1,
-            "preferred_username": "alice",
-        });
-        let c = IdTokenClaims::from_value(&v).expect("parse");
-        assert_eq!(c.name.as_deref(), Some("alice"));
-    }
-
-    #[test]
-    fn id_token_claims_iat_is_none_when_missing() {
-        let v = serde_json::json!({"iss": "i", "sub": "s", "aud": "x", "exp": 1});
-        let c = IdTokenClaims::from_value(&v).expect("parse");
-        assert_eq!(c.iat, None);
-        assert_eq!(c.nbf, None);
-        assert_eq!(c.azp, None);
-    }
-
-    fn good_claims(now: i64, nonce: &str) -> IdTokenClaims {
-        IdTokenClaims {
-            iss: "https://idp/".into(),
-            sub: "sub".into(),
-            aud: vec!["client-id".into()],
-            exp: now + 300,
-            iat: Some(now),
-            nbf: None,
-            nonce: Some(nonce.into()),
-            sid: None,
-            azp: None,
-            email: Some("a@b.com".into()),
-            name: Some("Alice".into()),
-        }
-    }
-
-    #[test]
-    fn validate_claims_accepts_good_token() {
-        let c = good_claims(1_000_000, "n");
-        validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_000)
-            .expect("ok");
-    }
-
-    #[test]
-    fn validate_claims_rejects_iss_mismatch() {
-        let c = good_claims(1_000_000, "n");
-        let r = validate_id_token_claims(
-            &c,
-            "https://other/",
-            "client-id",
-            "client-id",
-            "n",
-            1_000_000,
-        );
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn validate_claims_rejects_aud_mismatch() {
-        let c = good_claims(1_000_000, "n");
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "other-aud", "client-id", "n", 1_000_000);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn validate_claims_rejects_nonce_mismatch() {
-        let c = good_claims(1_000_000, "n");
-        let r = validate_id_token_claims(
-            &c,
-            "https://idp/",
-            "client-id",
-            "client-id",
-            "wrong",
-            1_000_000,
-        );
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn validate_claims_rejects_missing_nonce() {
-        let mut c = good_claims(1_000_000, "n");
-        c.nonce = None;
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_000);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn validate_claims_rejects_expired_token() {
-        let c = good_claims(1_000_000, "n");
-        // now is past exp + leeway
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_400);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn validate_claims_accepts_token_within_clock_skew_after_exp() {
-        let mut c = good_claims(1_000_000, "n");
-        c.exp = 1_000_000;
-        // now is 30s past exp — within 60s leeway
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_030);
-        assert!(r.is_ok(), "30s past exp should be in leeway");
-    }
-
-    #[test]
-    fn validate_claims_rejects_future_nbf() {
-        let mut c = good_claims(1_000_000, "n");
-        c.nbf = Some(1_000_500); // 500s in future, past leeway
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_000);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn validate_claims_accepts_nbf_within_leeway() {
-        let mut c = good_claims(1_000_000, "n");
-        c.nbf = Some(1_000_030); // 30s in future — within 60s leeway
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_000);
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn validate_claims_requires_azp_when_aud_is_multi() {
-        let mut c = good_claims(1_000_000, "n");
-        c.aud = vec!["client-id".into(), "other-aud".into()];
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_000);
-        assert!(r.is_err(), "multi-aud without azp must fail");
-    }
-
-    #[test]
-    fn validate_claims_accepts_multi_aud_with_correct_azp() {
-        let mut c = good_claims(1_000_000, "n");
-        c.aud = vec!["client-id".into(), "other-aud".into()];
-        c.azp = Some("client-id".into());
-        validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_000)
-            .expect("ok");
-    }
-
-    #[test]
-    fn validate_claims_rejects_multi_aud_with_wrong_azp() {
-        let mut c = good_claims(1_000_000, "n");
-        c.aud = vec!["client-id".into(), "other-aud".into()];
-        c.azp = Some("attacker".into());
-        let r =
-            validate_id_token_claims(&c, "https://idp/", "client-id", "client-id", "n", 1_000_000);
-        assert!(r.is_err());
-    }
-
-    fn header_b64(alg: &str) -> String {
-        let json = serde_json::json!({"alg": alg, "typ": "JWT"});
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json).expect("ser"))
-    }
-
-    fn jwt_with_alg(alg: &str) -> String {
-        let header = header_b64(alg);
-        let payload = URL_SAFE_NO_PAD.encode(b"{}");
-        let sig = URL_SAFE_NO_PAD.encode(b"x");
-        format!("{header}.{payload}.{sig}")
-    }
-
-    #[test]
-    fn alg_allowlist_accepts_rs256() {
-        verify_alg_against_allowlist(&jwt_with_alg("RS256")).expect("ok");
-    }
-
-    #[test]
-    fn alg_allowlist_rejects_none() {
-        let r = verify_alg_against_allowlist(&jwt_with_alg("none"));
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn alg_allowlist_rejects_hs256() {
-        // HMAC family is what enables key-confusion; must reject.
-        let r = verify_alg_against_allowlist(&jwt_with_alg("HS256"));
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn alg_allowlist_rejects_unknown() {
-        let r = verify_alg_against_allowlist(&jwt_with_alg("PS256")); // PS family not in list
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn alg_allowlist_rejects_missing_alg_field() {
-        // header without alg
-        let header = URL_SAFE_NO_PAD.encode(b"{\"typ\":\"JWT\"}");
-        let payload = URL_SAFE_NO_PAD.encode(b"{}");
-        let sig = URL_SAFE_NO_PAD.encode(b"x");
-        let r = verify_alg_against_allowlist(&format!("{header}.{payload}.{sig}"));
-        assert!(r.is_err());
+    fn additional_claims_omits_sid_when_absent() {
+        let parsed: BffAdditionalClaims =
+            serde_json::from_value(serde_json::json!({})).expect("parse");
+        assert!(parsed.sid.is_none());
+        let rendered = serde_json::to_value(&parsed).expect("ser");
+        assert_eq!(rendered, serde_json::json!({}));
     }
 }

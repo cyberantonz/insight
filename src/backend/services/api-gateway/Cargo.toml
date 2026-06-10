@@ -63,6 +63,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+# OIDC (discovery, code-with-PKCE, ID-token validation) used by the BFF.
+openidconnect = "4"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
