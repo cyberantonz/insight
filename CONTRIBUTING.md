@@ -290,19 +290,32 @@ Why this is a separate step — production ingestion populates `persons`
 from ClickHouse via `/v1/persons-seed` and Airbyte/dbt. Neither runs in
 compose, so we substitute a one-row direct insert.
 
-### Need a populated demo org?
+### Need a populated demo org + activity?
 
 `./dev-compose-seed.sh` only emits the single VITE_DEV_USER_EMAIL row.
-For a 25-person organisation (CEO + 4 teams × {lead + 5 ICs}) with
-visibility wired through the org chart, run the Python seeder:
+For a full demo — 25-person organisation (CEO + 4 teams × {lead + 5
+ICs}) with visibility wired through the org chart AND 60 days of
+team-typed ClickHouse activity — run:
 
 ```bash
-./dev-compose-seed-sample.sh identity   # MariaDB only
-./dev-compose-seed-sample.sh all        # MariaDB + ClickHouse (Phase 2)
+./dev-compose-seed-sample.sh identity   # MariaDB persons + org_chart only
+./dev-compose-seed-sample.sh silver     # ClickHouse: schema + views + ~24k rows
+./dev-compose-seed-sample.sh all        # both (default if no arg)
 ```
 
-The data contract — emails, UUIDs, per-team profiles, activity caps —
-lives in [/Users/antonz/Sources/cf/SEED_DATA_FORMAT.md](../SEED_DATA_FORMAT.md).
+The silver phase does three things in one shot, all idempotent:
+1. Creates bronze + silver placeholder tables (extracted from the k8s
+   `create-bronze-placeholders.sh` workaround).
+2. Applies every `src/ingestion/scripts/migrations/*.sql` to create the
+   `insight.*` gold views the analytics-api reads.
+3. Generates ~24k rows across 16 silver tables — `class_git_*` only for
+   devs, `class_crm_*` only for sales, etc. per the
+   [SEED_DATA_FORMAT.md](../SEED_DATA_FORMAT.md) §3 profile table.
+
+After it runs, the analytics-api's schema validator flips from
+"80 metrics error: table_not_found" to "80 ok" and the FE dashboards
+have data to show.
+
 The script source is `insight/compose/seed/` (see its README for ruff /
 mypy / venv setup).
 

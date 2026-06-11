@@ -185,10 +185,14 @@ CREATE TABLE IF NOT EXISTS silver.class_git_commits (
     insight_tenant_id String,
     commit_hash       String,
     project_key       String,
+    repo_slug         String  DEFAULT '',
     tenant_id         String,
     author_email      String,
     date              Date,
     is_merge_commit   UInt8,
+    file_path         String  DEFAULT '',
+    lines_added       Nullable(Float64),
+    lines_removed     Nullable(Float64),
     _version          UInt64
 ) ENGINE = ReplacingMergeTree(_version) ORDER BY (commit_hash) COMMENT 'INSIGHT_PLACEHOLDER_v1';
 CREATE TABLE IF NOT EXISTS silver.class_git_pull_requests (
@@ -199,12 +203,16 @@ CREATE TABLE IF NOT EXISTS silver.class_git_pull_requests (
     state             String,
     created_on        DateTime,
     merged_on         Nullable(DateTime),
+    closed_on         Nullable(DateTime),
+    lines_added       Nullable(Float64),
+    lines_removed     Nullable(Float64),
     _version          UInt64
 ) ENGINE = ReplacingMergeTree(_version) ORDER BY (pr_id) COMMENT 'INSIGHT_PLACEHOLDER_v1';
 CREATE TABLE IF NOT EXISTS silver.class_git_file_changes (
     insight_tenant_id String,
     commit_hash       String,
     project_key       String,
+    repo_slug         String DEFAULT '',
     tenant_id         String,
     file_path         String,
     lines_added       Int64,

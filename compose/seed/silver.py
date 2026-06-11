@@ -1,7 +1,8 @@
 """
-ClickHouse silver-layer schema bootstrap.
+ClickHouse silver-layer schema bootstrap + sample-data generation.
 
-Two responsibilities, both idempotent:
+Three responsibilities, run in order on every `silver` subcommand. All
+three are idempotent — re-running converges on the same end state.
 
 1. Create the bronze + silver placeholder tables that the gold-view
    migrations reference. Driven by `sql/placeholders.sql`, an extract
@@ -10,11 +11,10 @@ Two responsibilities, both idempotent:
 
 2. Apply the gold-view migrations from
    `insight/src/ingestion/scripts/migrations/*.sql` in lexicographic
-   order. These migrations are themselves idempotent
-   (`DROP VIEW IF EXISTS` + `CREATE VIEW`) so re-runs are safe.
+   order. Migrations are `DROP VIEW IF EXISTS` + `CREATE VIEW`.
 
-A Phase 3 commit will add the per-team row generators that INSERT into
-the silver tables created here. For now this module only handles schema.
+3. Generate per-team activity rows via `generators/*.py`. Volumes scale
+   by team profile + persona; ranges follow SEED_DATA_FORMAT §5.
 """
 
 from __future__ import annotations
@@ -26,7 +26,12 @@ from pathlib import Path
 
 import clickhouse_connect
 
+from generators import ai, collab, crm, git, hr, people, task
+from profiles import build_roster, get_dev_user_email
+
 LOG = logging.getLogger("seed.silver")
+
+DEFAULT_DAYS = 60
 
 # Bind-mount targets inside the seed-sample container — see
 # docker-compose.yml `seed-sample.volumes`.
@@ -97,6 +102,36 @@ def apply_migrations(client: clickhouse_connect.driver.client.Client) -> int:
     return total
 
 
+def generate_rows(
+    client: clickhouse_connect.driver.client.Client,
+) -> None:
+    """Populate silver tables with per-team activity for the demo roster."""
+    tenant_uuid = os.environ.get(
+        "TENANT_DEFAULT_ID", "00000000-df51-5b42-9538-d2b56b7ee953"
+    )
+    dev_email = get_dev_user_email()
+    roster = build_roster(dev_email)
+    days = int(os.environ.get("SEED_DAYS", DEFAULT_DAYS))
+    LOG.info(
+        "generating silver rows: tenant=%s days=%d persons=%d",
+        tenant_uuid, days, len(roster),
+    )
+
+    totals: dict[str, int] = {}
+    totals.update(people.generate(client, roster))
+    totals.update(git.generate(client, roster, tenant_uuid, days))
+    totals.update(crm.generate(client, roster, tenant_uuid, days))
+    totals.update(collab.generate(client, roster, tenant_uuid, days))
+    totals.update(hr.generate(client, roster, tenant_uuid, days))
+    totals.update(ai.generate(client, roster, tenant_uuid, days))
+    totals.update(task.generate(client, roster, tenant_uuid, days))
+
+    for table, n in sorted(totals.items()):
+        LOG.info("  %-46s %6d rows", table, n)
+    LOG.info("silver rows: %d total across %d tables",
+             sum(totals.values()), len(totals))
+
+
 def run() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -107,7 +142,8 @@ def run() -> None:
         LOG.info("ClickHouse version: %s", client.server_version)
         apply_placeholders(client)
         apply_migrations(client)
-        LOG.info("DONE: silver schema + gold views are in place.")
+        generate_rows(client)
+        LOG.info("DONE: silver schema + gold views + sample rows in place.")
     finally:
         client.close()
 
