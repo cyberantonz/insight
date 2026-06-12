@@ -74,7 +74,7 @@ spin the whole stack.
 
 **Repo layout.** The frontend lives in a sibling checkout:
 
-```
+```text
 cf/
 ├── insight/         (this repo)
 └── insight-front/   (frontend repo)
@@ -103,7 +103,7 @@ The compose path does **not** ship Airbyte or Argo Workflows — see
 
 ## What's in the compose stack
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Frontend (one of three modes — FRONTEND_MODE=dev|built|ghcr)        │
 │  ┌─────────────────┐ ┌─────────────────┐ ┌──────────────────┐        │
@@ -180,7 +180,7 @@ FRONTEND_MODE=built ./dev-compose.sh up --skip-build   # if dist/ is fresh
 Each backend container's `ENTRYPOINT` is the shared
 `src/backend/docker-entrypoint.sh`. Its contract:
 
-```
+```text
 docker-entrypoint.sh <watched-path> -- <command> [args...]
 ```
 
@@ -255,7 +255,7 @@ here is what actually carries identity from the browser to the
 downstream service. Knowing the path saves time when something
 401s unexpectedly.
 
-```
+```text
 1. Browser  → fetch-with-auth.ts builds an unsigned JWT
               ({alg:"none"}.{email, sub, preferred_username}.) and sets
               Authorization: Bearer <jwt> on every request.

@@ -6,7 +6,7 @@
 #
 # Quick start:
 #   cp .env.compose.example .env.compose
-#   ./dev-compose-up.sh
+#   ./dev-compose.sh up
 #
 # Everything is driven by .env.compose. Read .env.compose.example for the
 # full settings contract.
@@ -17,7 +17,7 @@
 #   * frontend        : ONE of insight-front-{dev,built,ghcr}, selected by
 #                       FRONTEND_MODE (profile-gated)
 #   * builders        : build-rust, build-dotnet, build-frontend
-#                       (profile=build — invoked by dev-compose-build.sh)
+#                       (profile=build — invoked by dev-compose.sh build)
 #
 # Auto-reload: every backend container runs the shared docker-entrypoint.sh
 # which honours ENABLE_AUTO_RELOAD=true to wrap the binary in `watchexec`.
@@ -166,7 +166,7 @@ services:
   # All three use the EXISTING service Dockerfiles (modified to bundle
   # docker-entrypoint.sh + watchexec). For ghcr mode, set
   # API_GATEWAY_IMAGE / ANALYTICS_API_IMAGE / IDENTITY_IMAGE to a registry
-  # ref in .env.compose — the dev-compose-up.sh script generates an
+  # ref in .env.compose — the dev-compose.sh up script generates an
   # override that drops `build:` and the bind-mount for affected services.
 
   api-gateway:
@@ -185,7 +185,7 @@ services:
       # selects which one; see CONTRIBUTING.md for the OIDC swap.
     volumes:
       # Bind-mount the host-built Linux binary over the baked one. The
-      # ./compose/build/api-gateway path is populated by dev-compose-build.sh
+      # ./compose/build/api-gateway path is populated by dev-compose.sh build
       # (or by the initial `docker compose build` cold start that extracts
       # the binary out of the image).
       - ./compose/build/api-gateway/insight-api-gateway:/app/insight-api-gateway:ro
@@ -261,7 +261,7 @@ services:
 
   # ── Frontend (one variant active per FRONTEND_MODE) ────────────────────
   #
-  # The dev-compose-up.sh script translates FRONTEND_MODE=dev|built|ghcr
+  # The dev-compose.sh up script translates FRONTEND_MODE=dev|built|ghcr
   # into the matching --profile flag.
 
   insight-front-dev:
@@ -307,7 +307,7 @@ services:
     environment:
       CSP_REMOTE: ${CSP_REMOTE:-}
     volumes:
-      # Host-built dist/ — produced by dev-compose-build.sh (build-frontend)
+      # Host-built dist/ — produced by dev-compose.sh build (build-frontend)
       # or by running `pnpm build` directly in the insight-front repo.
       - ${INSIGHT_FRONT_PATH:-../insight-front}/dist:/usr/share/nginx/html:ro
       - ${INSIGHT_FRONT_PATH:-../insight-front}/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
@@ -330,7 +330,7 @@ services:
 
   # ── Builders (profile=build) ───────────────────────────────────────────
   #
-  # These run to completion and exit. Invoked by dev-compose-build.sh, not
+  # These run to completion and exit. Invoked by dev-compose.sh build, not
   # by `up`. They produce Linux artefacts on whatever host (Mac/Win/Linux)
   # so the runtime containers can bind-mount them.
 
@@ -392,7 +392,7 @@ services:
 
   # ── Sample-data seeder (profile=seed) ──────────────────────────────────
   #
-  # Invoked via ./dev-compose-seed-sample.sh which passes positional args
+  # Invoked via ./dev-compose.sh seed which passes positional args
   # (identity | silver | all) through to seed.py.
   seed-sample:
     profiles: ["seed"]
