@@ -7,7 +7,7 @@ use axum::Json;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use modkit_canonical_errors::{CanonicalError, Problem};
+use toolkit_canonical_errors::{CanonicalError, Problem};
 use sea_orm::{ActiveModelTrait, ColumnTrait, Condition, EntityTrait, NotSet, QueryFilter, Set};
 use uuid::Uuid;
 

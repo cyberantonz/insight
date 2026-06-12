@@ -10,9 +10,9 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use axum::http::{Method, StatusCode};
 use axum::{Json, Router};
-use modkit::api::{OpenApiRegistry, OperationBuilder};
-use modkit::context::ModuleCtx;
-use modkit::contracts::{Module, RestApiCapability};
+use toolkit::api::{OpenApiRegistry, OperationBuilder};
+use toolkit::context::GearCtx;
+use toolkit::contracts::{Gear, RestApiCapability};
 use serde::{Deserialize, Serialize};
 
 /// OIDC configuration served to the frontend.
@@ -30,7 +30,7 @@ pub struct AuthInfoResponse {
     pub response_type: String,
 }
 
-/// Module configuration (from YAML).
+/// Gear configuration (from YAML).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthInfoConfig {
@@ -51,7 +51,7 @@ pub struct AuthInfoConfig {
 }
 
 /// Auth info module — serves OIDC config to the frontend.
-#[modkit::module(
+#[toolkit::gear(
     name = "auth-info",
     capabilities = [rest]
 )]
@@ -68,8 +68,8 @@ impl Default for AuthInfoModule {
 }
 
 #[async_trait]
-impl Module for AuthInfoModule {
-    async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
+impl Gear for AuthInfoModule {
+    async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
         let config: AuthInfoConfig = ctx.config()?;
 
         if config.issuer_url.is_empty() {
@@ -99,7 +99,7 @@ impl Module for AuthInfoModule {
 impl RestApiCapability for AuthInfoModule {
     fn register_rest(
         &self,
-        _ctx: &ModuleCtx,
+        _ctx: &GearCtx,
         router: Router,
         openapi: &dyn OpenApiRegistry,
     ) -> anyhow::Result<Router> {

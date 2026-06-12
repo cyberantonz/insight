@@ -1,6 +1,6 @@
 //! Query request/response models — `OData`-style per DNA REST conventions.
 
-use modkit_canonical_errors::Problem;
+use toolkit_canonical_errors::Problem;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
