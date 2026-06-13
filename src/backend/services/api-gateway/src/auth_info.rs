@@ -42,7 +42,7 @@ pub struct AuthInfoConfig {
     pub redirect_uri: String,
     /// Scopes to request, as a space-separated string (matches OAuth2's wire
     /// format). Stored as `String` so the standard
-    /// `APP__modules__auth-info__config__scopes` env-var override works
+    /// `APP__gears__auth-info__config__scopes` env-var override works
     /// without a custom Vec deserializer; split on whitespace when building
     /// the response. IdP-specific:
     ///   Entra v2 single-app: "openid profile email api://<clientId>/Access.Default"
