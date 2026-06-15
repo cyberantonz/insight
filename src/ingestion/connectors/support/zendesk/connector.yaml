@@ -126,6 +126,15 @@ streams:
         - "%Y-%m-%dT%H:%M:%SZ"
         - "%Y-%m-%dT%H:%M:%S.%fZ"
       datetime_format: "%s"
+      # Re-query a 1-day tail on every sync. Zendesk's incremental export is
+      # eventually-consistent at the cursor boundary, so without this a record
+      # whose updated_at lands at the edge is permanently skipped — and for a
+      # ticket that drops its ENTIRE audit activity (our only source of
+      # updates/comments/solved). Append-only RMT bronze + read-time dedup
+      # absorb the re-delivery, so the overlap is free of duplicates. (cf. jira
+      # #1316: use lookback_window, NOT a future end_datetime — the latter
+      # advances the cursor past the real query time and permanently skips rows.)
+      lookback_window: "P1D"
       start_datetime:
         type: MinMaxDatetime
         datetime: "{{ config.get('start_date') or day_delta(-90, format='%Y-%m-%d') }}"
@@ -339,6 +348,15 @@ streams:
         - "%Y-%m-%dT%H:%M:%SZ"
         - "%Y-%m-%dT%H:%M:%S.%fZ"
       datetime_format: "%s"
+      # Re-query a 1-day tail on every sync. Zendesk's incremental export is
+      # eventually-consistent at the cursor boundary, so without this a record
+      # whose updated_at lands at the edge is permanently skipped — and for a
+      # ticket that drops its ENTIRE audit activity (our only source of
+      # updates/comments/solved). Append-only RMT bronze + read-time dedup
+      # absorb the re-delivery, so the overlap is free of duplicates. (cf. jira
+      # #1316: use lookback_window, NOT a future end_datetime — the latter
+      # advances the cursor past the real query time and permanently skips rows.)
+      lookback_window: "P1D"
       start_datetime:
         type: MinMaxDatetime
         datetime: "{{ config.get('start_date') or day_delta(-90, format='%Y-%m-%d') }}"

@@ -23,12 +23,17 @@ name: zendesk
 #   `.get(k, {})` returned None and the chained .get() threw "'None' has no
 #   attribute 'get'", failing every incremental sync. Switched to `(... or {})`.
 #   PATCH: no schema/stream change.
+# 1.2.3: lookback_window P1D on support_tickets + zendesk_satisfaction_ratings
+#   cursors. The incremental export is eventually-consistent at the boundary;
+#   without a lookback a record at the edge is permanently skipped (for a
+#   ticket, its whole audit activity). cf. jira #1316. PATCH: no schema change,
+#   cursor state stays valid (lookback only widens the start each run).
 # `nocode` = declarative-manifest connector (connector.yaml published to the
 # Airbyte builder), as opposed to `cdk` (a pre-built Python image registered
 # from images.cdk.image). MUST be `nocode`/absent for declarative connectors:
 # reconcile only branches on `nocode` vs `cdk` — any other value (e.g.
 # `declarative`) falls through to the cdk image path and fails with no image.
-version: "1.2.2"
+version: "1.2.3"
 type: nocode
 schedule: "0 5 * * *"       # 05:00 UTC daily
 workflow: sync               # Argo workflow template: ingestion-pipeline
