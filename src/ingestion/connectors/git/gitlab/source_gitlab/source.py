@@ -69,14 +69,20 @@ class SourceGitlab(AbstractSource):
         if not cfg.groups and not cfg.projects:
             try:
                 me = client.current_user()
-            except requests.RequestException:
-                me = {}
-            if not me.get("is_admin"):
+            except requests.RequestException as exc:
                 logger.warning(
-                    "Whole-instance mode with a non-admin token: coverage is "
-                    "limited to projects and users this token can access. Use an "
-                    "admin token for full coverage, or set gitlab_groups."
+                    f"Whole-instance mode: could not verify token admin status "
+                    f"({type(exc).__name__}); coverage may be limited to the "
+                    f"projects and users this token can access. Use an admin "
+                    f"token for full coverage, or set gitlab_groups."
                 )
+            else:
+                if not me.get("is_admin"):
+                    logger.warning(
+                        "Whole-instance mode with a non-admin token: coverage is "
+                        "limited to projects and users this token can access. Use "
+                        "an admin token for full coverage, or set gitlab_groups."
+                    )
         return True, None
 
     def streams(self, config: Mapping[str, Any]) -> list[Stream]:
