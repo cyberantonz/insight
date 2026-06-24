@@ -4,8 +4,8 @@ description: >
   bronze_m365.onedrive_activity + bronze_m365.sharepoint_activity for 3 people in
   one team and asserts the IC Bullet Collaboration metric (…0012).
   m365_files_shared_external = Σ sharedExternallyFileCount across BOTH products
-  and the period. alice has both (2 + 1 = 3); carol = 0 (a real 0 in the cohort).
-  value = member, median/range = team.
+  and the period. alice has both (2 + 1 = 3); carol = 0 (a real 0 in the team).
+  value = member; median/range = team (department `org_unit_id`).
 
 bronze:
   bronze_bamboohr.employees:
