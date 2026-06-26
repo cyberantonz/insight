@@ -23,6 +23,7 @@ import pytest
 from e2e_lib.analytics_api import AnalyticsApiProcess
 from e2e_lib.ch_seeder import CHSeeder
 from e2e_lib.dbt_runner import DbtRunner
+from e2e_lib.enrich import EnrichRunner
 from e2e_lib.expect_engine import evaluate_case
 from e2e_lib.fixture_loader import TestYaml
 from e2e_lib.migration_applier import refresh_intermediates, reapply_migrations
@@ -36,6 +37,7 @@ def test_e2e_metric_smoke(
     test_yaml: TestYaml,
     ch_seeder: CHSeeder,
     dbt_runner: DbtRunner,
+    enrich_runner: EnrichRunner,
     analytics_api: AnalyticsApiProcess,
     worker_ctx: WorkerContext,
 ) -> None:
@@ -60,14 +62,51 @@ def test_e2e_metric_smoke(
         for st in staging:
             ch_seeder.ledger.record("staging", st)
         dbt_runner.build(" ".join(f"+{m}" for m in staging), worker_ctx=worker_ctx)
-    if silver:
-        for cls in silver:
+    # 3b. Connector enrich steps (descriptor.images.enrich), between staging and
+    #     silver — mirrors prod: dbt(tag:<c>) → <c>-enrich → dbt(silver). Data-driven
+    #     from descriptors, so any connector with an enrich step participates (jira
+    #     today, youtrack once it ships one). The enrich binary reads the connector's
+    #     staging tables (built above) and writes back into `staging.*`.
+    touched_schemas = {schema for schema, _ in test_yaml.touched_tables}
+    ran_enrich_steps = []
+    for step in enrich_runner.steps_for(touched_schemas):
+        source_ids = enrich_runner.discover_source_ids(step, test_yaml.touched_tables)
+        if not source_ids:
+            continue
+        # The enrich binary APPENDS into its staging output tables, and dbt never
+        # rebuilds them (they are sources, not models), so a prior test's rows for
+        # the same source_id would survive into this test's silver rebuild and
+        # inflate absolute-count metrics. Clear them before enriching so each test
+        # starts from a clean enrich output (the silver class table read from them
+        # is already truncated via the ledger above).
+        for schema, table in dbt_runner.enrich_output_tables(step.name):
+            ch_seeder.truncate_table(schema, table)
+        enrich_runner.run(step, source_ids)
+        ran_enrich_steps.append(step)
+
+    # 3c. Silver class models. Build exactly what the seeded data supports:
+    #     derive_selectors gives the silver fed by seeded bronze (e.g. class_task_users,
+    #     class_task_field_metadata); each enrich step additionally feeds silver via an
+    #     EPHEMERAL staging view (e.g. class_task_field_history), which derive_selectors
+    #     can't see. We build that precise set BY NAME rather than the connector's broad
+    #     `tag:silver,tag:<c>+` so unseeded streams (class_task_sprints, the identity
+    #     chain, …) are not dragged in and fail on absent bronze. Only steps that
+    #     ACTUALLY ran (had a source_id) contribute their ephemeral targets — otherwise
+    #     we'd build silver that depends on enrich output that was never produced.
+    silver_set = set(silver)
+    for step in ran_enrich_steps:
+        silver_set.update(dbt_runner.ephemeral_silver_targets(step.name))
+    if silver_set:
+        # Record before building (same rationale as staging above): a build that
+        # raises partway still leaves the targets in the truncate ledger for the
+        # next test to clean.
+        for cls in silver_set:
             ch_seeder.ledger.record("silver", cls)
-        dbt_runner.build(" ".join(silver), worker_ctx=worker_ctx)
+        dbt_runner.build(" ".join(sorted(silver_set)), worker_ctx=worker_ctx)
 
     # 4. Recreate gold views against the now-real silver schema (fixes the rig-only
     #    Code 80 nullability mismatch on date-filtered reads), then refresh MVs.
-    if staging or silver:
+    if staging or silver_set or ran_enrich_steps:
         reapply_migrations(ch_seeder.cfg)
     refresh_intermediates(ch_seeder.cfg)
 

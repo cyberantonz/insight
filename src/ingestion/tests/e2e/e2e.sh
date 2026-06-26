@@ -42,6 +42,9 @@ shift || true
 
 case "$cmd" in
     build)
+        # Builds the runner image; its `additional_contexts` pull each connector's
+        # enrich binary from that connector's own build-only service (compiled FROM
+        # ITS OWN Dockerfile) and bake it in via COPY --from. No docker-in-docker.
         docker compose "${COMPOSE_FILES[@]}" build runner
         ;;
     test|run)
