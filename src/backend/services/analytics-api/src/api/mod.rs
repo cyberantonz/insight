@@ -299,15 +299,6 @@ pub fn router(state: AppState) -> Router {
         .handler(admin::delete)
         .register(router, &openapi);
 
-    // Health — public, no auth/license, no canonical error envelope.
-    router = OperationBuilder::get("/health")
-        .operation_id("analytics_api.health")
-        .summary("Liveness/readiness probe")
-        .public()
-        .json_response(StatusCode::OK, "Service healthy")
-        .handler(handlers::health)
-        .register(router, &openapi);
-
     // The tenant-resolution middleware uses just the auth-trait — not full
     // `AppState` — as its layer state, so the integration tests in
     // `tenant_resolution_tests` can mount it without standing up a
@@ -315,10 +306,29 @@ pub fn router(state: AppState) -> Router {
     // here and again handed to the route state via `AppState`.
     let tenant_auth = state.tenant_auth.clone();
 
-    router
-        .layer(middleware::from_fn_with_state(
-            tenant_auth,
-            auth::tenant_middleware,
-        ))
-        .with_state(state)
+    let api = router.layer(middleware::from_fn_with_state(
+        tenant_auth,
+        auth::tenant_middleware,
+    ));
+
+    // Health probe — registered on a SEPARATE router merged *after* the
+    // tenant middleware, so it stays off the authenticated/tenant-scoped path.
+    // Kubernetes liveness/readiness probes hit `/health` directly on the pod
+    // (no gateway hop, no `X-Insight-Tenant-Id` header), so it must answer
+    // without tenant resolution — otherwise a multi-tenant install (no
+    // `tenant_default_id` configured) would 400 every probe and never go Ready.
+    //
+    // This mirrors the gears-rust api-gateway host, which serves `/health` +
+    // `/healthz` on its own top-level router and force-marks them public rather
+    // than routing them through the per-request auth layer
+    // (gears/system/api-gateway `apply_prefix_nesting` + `build_route_policy_from_specs`).
+    let health = OperationBuilder::get("/health")
+        .operation_id("analytics_api.health")
+        .summary("Liveness/readiness probe")
+        .public()
+        .json_response(StatusCode::OK, "Service healthy")
+        .handler(handlers::health)
+        .register(Router::new(), &openapi);
+
+    api.merge(health).with_state(state)
 }
