@@ -1,22 +1,29 @@
-"""Metric-coverage gate: every metric the API serves is tested, or baseline-skipped.
+"""Metric-coverage gate: every metric_key the catalog exposes has its value tested.
 
-Cross-checks, by metric_id, the metric universe — read over HTTP from a running
-analytics-api (`GET /v1/metrics`: the enabled metric_ids `POST /v1/metrics/queries`
-serves, seeded by the analytics-api migrations) — against the metric_ids each
-`metrics/*.test.yaml` sends. The verdict per metric is **binary**:
+Cross-checks, **by metric_key**, the metric universe — read over HTTP from a
+running analytics-api (`POST /v1/catalog/get_metrics`: the enabled product
+metric_keys, each a `<storage_table>.<column>` seeded by the analytics-api
+migrations) — against the metric_keys whose VALUE the tests assert
+(`find: {metric_key: …}` paired with `equal`/`assert` in the same rule). Binary
+verdict per metric_key:
 
-  • covered    (a test queries it)        → PASS
-  • skip-listed (in SKIP_LIST below)       → PASS (baseline)
-  • neither                                → FAIL  (a new / unlisted metric)
+  • value-asserted by a test       → PASS
+  • skip-listed (SKIP_LIST below)   → PASS (baseline)
+  • neither                         → FAIL  (a number nobody validates)
+
+Catalog keys are dotted (`collab_bullet_rows.m365_emails_sent`); a test asserts
+the bare response key (`m365_emails_sent`). The column suffix is unique across
+the catalog, so we map bare→dotted by suffix (a future collision raises — see
+`CoverageReport.__post_init__`).
 
 The skip list is the accepted baseline — inline `SKIP_LIST` (single source of
-truth, no side-car file). It is kept honest: a STALE entry (id no longer served)
-or a REDUNDANT one (now covered by a test) also fails the gate, prompting you to
-remove it. The overall gate is PASS iff there are no FAILs.
+truth, no side-car file). Kept honest: a STALE entry (key no longer in the
+catalog) or a REDUNDANT one (now value-tested) also fails. PASS iff no FAILs.
 
 This module never spawns analytics-api — it reads the universe over HTTP only.
-Entry point: `scripts/ci/metric_coverage.sh` boots MariaDB + analytics-api and
-runs this with `ANALYTICS_API_URL` set (host needs only pyyaml + httpx). Ad hoc:
+Entry point: `scripts/ci/metric_coverage.sh` (a step in the E2E — Bronze to API
+workflow) boots MariaDB + analytics-api and runs this with `ANALYTICS_API_URL`
+set (host needs only pyyaml + httpx). Ad hoc:
 `ANALYTICS_API_URL=http://… python3 lib/metric_coverage.py [--md]`.
 """
 
@@ -30,185 +37,217 @@ from pathlib import Path
 import yaml
 
 # The tenant header the API requires (mirrors lib.config.TENANT_HEADER). Any
-# non-nil tenant resolves the middleware; migration-seeded metrics live under
-# the GLOBAL (nil) tenant and `GET /v1/metrics` returns rows for
-# `tenant_id IN [request_tenant, global]`, so the exact value doesn't matter.
+# non-nil tenant resolves the middleware; the catalog rows are tenant-NULL
+# (global), so `get_metrics` returns them for any resolved tenant.
 TENANT_HEADER = "X-Insight-Tenant-Id"
 DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 # lib/metric_coverage.py -> lib/ -> e2e/
 _E2E_ROOT = Path(__file__).resolve().parents[1]
 METRICS_DIR = _E2E_ROOT / "metrics"
-
-# ── SKIP LIST (single source of truth) ───────────────────────────────────────
-# metric_ids intentionally NOT covered by a test — the accepted baseline. Each
-# `(metric_id, name, reason)`. A served metric_id that is neither tested nor
-# listed here FAILS the gate. When you add a test for one of these, DELETE its
-# row (a now-covered skip fails the gate — see `redundant_skips`).
-SKIP_LIST: list[tuple[str, str, str]] = [
-    # Blocked: bullet metrics with no seedable connector in the rig.
-    ("00000000-0000-0000-0001-000000000006", "Team Bullet AI Adoption",
-     "needs cursor / claude_code / chatgpt_team bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000013", "IC Bullet AI",
-     "needs cursor / claude_code / chatgpt_team bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000004", "Team Bullet Code Quality",
-     "needs bitbucket / CI bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000007", "Team Bullet Git",
-     "needs bitbucket bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000018", "IC Bullet Git",
-     "needs bitbucket bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000008", "IC Bullet Support",
-     "needs zendesk bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000040", "Team Bullet Wiki",
-     "needs confluence / outline bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000041", "IC Bullet Wiki",
-     "needs confluence / outline bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000020", "CRM KPIs",
-     "needs hubspot bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000021", "CRM Chart Deal Flow",
-     "needs hubspot bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000022", "CRM Bullet Velocity Quality",
-     "needs hubspot bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000023", "CRM Bullet Activity",
-     "needs hubspot bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000028", "CRM Pipeline Now",
-     "needs hubspot bronze fixtures."),
-    ("00000000-0000-0000-0001-000000000010", "IC KPIs",
-     "composite heatmap — needs cursor + bitbucket fixtures alongside jira/m365."),
-
-    # Non-bullet query shapes (charts / drills / distributions / members / summary).
-    ("00000000-0000-0000-0001-000000000001", "Executive Summary",
-     "summary aggregate, not a value bullet."),
-    ("00000000-0000-0000-0001-000000000002", "Team Members",
-     "roster query, not a metric value."),
-    ("00000000-0000-0000-0001-000000000014", "IC Chart LOC Trend",
-     "time-series chart shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000015", "IC Chart Delivery Trend",
-     "time-series chart shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000016", "IC Drill Detail",
-     "drill-down detail rows, not a bullet."),
-    ("00000000-0000-0000-0001-000000000017", "IC Time Off",
-     "time-off calendar shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000030", "IC Histogram",
-     "distribution histogram shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000036", "IC Section Trend",
-     "section-level trend shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000043", "Member PRs Merged",
-     "per-member value row, not a team/IC bullet."),
-    ("00000000-0000-0000-0001-000000000042", "Team Member Values — Git",
-     "per-member value rows, not a bullet."),
-    ("00000000-0000-0000-0001-000000000049", "Team Member Values — AI",
-     "per-member value rows, not a bullet."),
-    ("00000000-0000-0000-0001-000000000044", "Dept Distribution — Task Delivery",
-     "department distribution shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000045", "Dept Distribution — Collaboration",
-     "department distribution shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000046", "Dept Distribution — Git",
-     "department distribution shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000047", "Dept Distribution — Heatmap KPIs",
-     "department distribution shape, not a bullet."),
-    ("00000000-0000-0000-0001-000000000048", "Dept Distribution — AI",
-     "department distribution shape, not a bullet."),
-]
-
 _WHERE = "SKIP_LIST in lib/metric_coverage.py"
 
+# ── SKIP LIST (single source of truth) ───────────────────────────────────────
+# Catalog metric_keys (`<table>.<column>`) intentionally NOT value-tested — the
+# accepted baseline. Each `(metric_key, reason)`. A served metric_key that is
+# neither value-asserted by a test nor listed here FAILS the gate. When a test
+# starts asserting one, DELETE its row (a now-tested skip fails the gate).
+# "reachable: …" entries are the actionable backlog (fixtures exist).
+SKIP_LIST: list[tuple[str, str]] = [
+    # ai_bullet_rows.*
+    ("ai_bullet_rows.active_ai_members", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.ai_loc_share2", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cc_active", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cc_cost", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cc_lines", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cc_overage", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cc_sessions", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cc_tool_accept", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cc_tool_acceptance", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.chatgpt", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.chatgpt_active", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.claude_web", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.codex_active", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.codex_lines", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.codex_sessions", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cursor_acceptance", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cursor_active", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cursor_agents", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cursor_completions", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.cursor_lines", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.prs_total", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.prs_with_cc", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    ("ai_bullet_rows.team_ai_loc", "needs cursor / claude_code / chatgpt_team bronze fixtures."),
+    # code_quality_bullet_rows.*
+    ("code_quality_bullet_rows.build_success", "needs bitbucket / CI bronze fixtures."),
+    ("code_quality_bullet_rows.pr_cycle_time", "needs bitbucket / CI bronze fixtures."),
+    ("code_quality_bullet_rows.prs_per_dev", "needs bitbucket / CI bronze fixtures."),
+    # collab_bullet_rows.*
+    ("collab_bullet_rows.slack_active_days", "needs a Slack connector (no rig fixtures)."),
+    ("collab_bullet_rows.slack_channel_posts", "needs a Slack connector (no rig fixtures)."),
+    ("collab_bullet_rows.slack_messages_sent", "needs a Slack connector (no rig fixtures)."),
+    ("collab_bullet_rows.slack_msgs_per_active_day", "needs a Slack connector (no rig fixtures)."),
+    ("collab_bullet_rows.zoom_meeting_hours", "reachable: zoom fixtures exist — test pending."),
+    ("collab_bullet_rows.zoom_meetings", "reachable: zoom fixtures exist — test pending."),
+    # crm_bullet_rows.*
+    ("crm_bullet_rows.avg_deal_size", "needs hubspot bronze fixtures."),
+    ("crm_bullet_rows.calls", "needs hubspot bronze fixtures."),
+    ("crm_bullet_rows.comms_per_won", "needs hubspot bronze fixtures."),
+    ("crm_bullet_rows.cycle_days", "needs hubspot bronze fixtures."),
+    ("crm_bullet_rows.deals_opened", "needs hubspot bronze fixtures."),
+    ("crm_bullet_rows.emails", "needs hubspot bronze fixtures."),
+    ("crm_bullet_rows.meetings", "needs hubspot bronze fixtures."),
+    ("crm_bullet_rows.win_rate", "needs hubspot bronze fixtures."),
+    # git_bullet_rows.*
+    ("git_bullet_rows.clean_loc", "needs bitbucket bronze fixtures."),
+    ("git_bullet_rows.commits", "needs bitbucket bronze fixtures."),
+    ("git_bullet_rows.commits_per_active_day", "needs bitbucket bronze fixtures."),
+    ("git_bullet_rows.lines_per_commit", "needs bitbucket bronze fixtures."),
+    ("git_bullet_rows.merge_rate", "needs bitbucket bronze fixtures."),
+    ("git_bullet_rows.pr_size", "needs bitbucket bronze fixtures."),
+    ("git_bullet_rows.prs_created", "needs bitbucket bronze fixtures."),
+    # ic_kpis.*
+    ("ic_kpis.ai_loc_share_pct", "composite heatmap KPI — needs cursor + bitbucket fixtures alongside jira/m365."),
+    ("ic_kpis.ai_sessions", "composite heatmap KPI — needs cursor + bitbucket fixtures alongside jira/m365."),
+    ("ic_kpis.bugs_fixed", "composite heatmap KPI — needs cursor + bitbucket fixtures alongside jira/m365."),
+    ("ic_kpis.focus_time_pct", "composite heatmap KPI — needs cursor + bitbucket fixtures alongside jira/m365."),
+    ("ic_kpis.pr_cycle_time_h", "composite heatmap KPI — needs cursor + bitbucket fixtures alongside jira/m365."),
+    ("ic_kpis.prs_merged", "composite heatmap KPI — needs cursor + bitbucket fixtures alongside jira/m365."),
+    ("ic_kpis.tasks_closed", "composite heatmap KPI — needs cursor + bitbucket fixtures alongside jira/m365."),
+    # support_bullet_rows.*
+    ("support_bullet_rows.support_active", "needs zendesk bronze fixtures."),
+    ("support_bullet_rows.support_csat", "needs zendesk bronze fixtures."),
+    ("support_bullet_rows.support_kb", "needs zendesk bronze fixtures."),
+    ("support_bullet_rows.support_private_comments", "needs zendesk bronze fixtures."),
+    ("support_bullet_rows.support_public_comments", "needs zendesk bronze fixtures."),
+    ("support_bullet_rows.support_solved", "needs zendesk bronze fixtures."),
+    ("support_bullet_rows.support_updates", "needs zendesk bronze fixtures."),
+    # task_delivery_bullet_rows.*  (reachable — jira fixtures exist; drain this backlog)
+    ("task_delivery_bullet_rows.avg_slip", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.estimation_accuracy", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.flow_efficiency", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.mean_time_to_resolution", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.on_time_delivery", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.overrun_ratio", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.pickup_time", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.scope_completion", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.scope_creep", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.stale_in_progress", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.task_dev_time", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.task_reopen_rate", "reachable: jira fixtures exist — test pending."),
+    ("task_delivery_bullet_rows.worklog_logging_accuracy", "reachable: jira fixtures exist — test pending."),
+    # wiki_bullet_rows.*
+    ("wiki_bullet_rows.wiki_active_authors", "needs confluence / outline bronze fixtures."),
+    ("wiki_bullet_rows.wiki_comments", "needs confluence / outline bronze fixtures."),
+    ("wiki_bullet_rows.wiki_edits", "needs confluence / outline bronze fixtures."),
+    ("wiki_bullet_rows.wiki_pages_created", "needs confluence / outline bronze fixtures."),
+]
 
-def normalize_id(raw: str) -> str:
-    """Canonicalize a metric_id to dash-less lowercase hex for comparison.
 
-    The API returns dashed UUIDs; test files and `SKIP_LIST` use dashed UUIDs
-    too — compare on the dash-less lowercase form to be representation-agnostic.
-    """
-    return raw.replace("-", "").strip().lower()
+def suffix(metric_key: str) -> str:
+    """The `<column>` part of a `<table>.<column>` catalog key (or the bare key)."""
+    return metric_key.split(".", 1)[-1]
 
 
-def skip_index() -> dict[str, dict]:
-    """`{normalized_id: {metric_id, name, reason}}` from the inline `SKIP_LIST`.
-
-    Raises on a duplicate metric_id so the list can't silently double-list one.
-    """
-    out: dict[str, dict] = {}
-    for metric_id, name, reason in SKIP_LIST:
-        key = normalize_id(metric_id)
+def skip_index() -> dict[str, str]:
+    """`{metric_key: reason}` from `SKIP_LIST`. Raises on a duplicate key."""
+    out: dict[str, str] = {}
+    for key, reason in SKIP_LIST:
         if key in out:
-            raise ValueError(f"duplicate metric_id in SKIP_LIST: {metric_id}")
-        out[key] = {"metric_id": metric_id, "name": name, "reason": reason}
+            raise ValueError(f"duplicate metric_key in SKIP_LIST: {key}")
+        out[key] = reason
     return out
 
 
 def universe_from_url(base_url: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict[str, str]:
-    """`{normalized_id: name}` from `GET {base_url}/v1/metrics` — the metric
-    universe, read over HTTP from a running analytics-api.
+    """`{metric_key: label}` from `POST {base_url}/v1/catalog/get_metrics` — the
+    enabled product metric_keys (dotted `<table>.<column>`).
 
-    The endpoint already returns exactly the enabled metrics for the request
-    tenant (`is_enabled = true` AND `tenant_id IN [tenant, global]`), so no
-    client-side filtering is needed. Response shape: `{"items": [{"id","name"}]}`.
+    Sourced from the API (not a raw `metric_catalog` SELECT) so the gate checks
+    the contract consumers see; the endpoint already returns exactly the enabled
+    catalog rows. Response shape: `{"metrics": [{"metric_key", "label", ...}]}`.
     """
     import httpx  # local import: keeps the pure logic importable without httpx
 
     with httpx.Client(base_url=base_url, timeout=30.0, headers={TENANT_HEADER: tenant_id}) as c:
-        resp = c.get("/v1/metrics")
+        resp = c.post("/v1/catalog/get_metrics", json={})
         resp.raise_for_status()
         body = resp.json()
-    items = body.get("items", []) if isinstance(body, dict) else (body or [])
-    return {normalize_id(str(it["id"])): str(it.get("name", "")) for it in items}
+    metrics = body.get("metrics", []) if isinstance(body, dict) else []
+    return {str(m["metric_key"]): str(m.get("label", "")) for m in metrics}
 
 
-def covered_from_tests(metrics_dir: Path = METRICS_DIR) -> dict[str, set[str]]:
-    """`{normalized_id: {test files that query it}}` from request bodies.
+def asserted_keys_from_tests(metrics_dir: Path = METRICS_DIR) -> dict[str, set[str]]:
+    """`{bare_metric_key: {test files}}` — keys whose VALUE a test checks.
 
-    Plain `safe_load` (no $ref resolution): a metric_id is always a literal in
-    `cases[].request.body.queries[].metric_id`, never a reference.
+    A key counts only when a `find: {metric_key: …}` selector is paired with an
+    `equal` or `assert` in the SAME expect rule (i.e. the value is validated, not
+    merely selected). Plain `safe_load` — a metric_key is always a literal.
     """
-    covered: dict[str, set[str]] = {}
+    out: dict[str, set[str]] = {}
     for path in sorted(metrics_dir.glob("*.test.yaml")):
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for case in doc.get("cases") or []:
-            body = (case.get("request") or {}).get("body") or {}
-            for q in body.get("queries") or []:
-                mid = q.get("metric_id")
-                if mid:
-                    covered.setdefault(normalize_id(str(mid)), set()).add(path.name)
-    return covered
+            for rule in case.get("expect") or []:
+                mk = (rule.get("find") or {}).get("metric_key")
+                if mk and ("equal" in rule or "assert" in rule):
+                    out.setdefault(str(mk), set()).add(path.name)
+    return out
 
 
 @dataclass
 class CoverageReport:
-    universe: dict[str, str]  # id -> name
-    covered: dict[str, set[str]]  # id -> {files}
-    skips: dict[str, dict]  # id -> skip entry
+    universe: dict[str, str]  # metric_key (dotted) -> label
+    asserted: dict[str, set[str]]  # bare metric_key -> {files}
+    skips: dict[str, str]  # metric_key (dotted) -> reason
 
-    # Derived sets (ids), populated in __post_init__.
-    covered_in_universe: set[str] = field(default_factory=set)  # PASS (tested)
+    # Derived sets (dotted metric_keys unless noted), populated in __post_init__.
+    covered: set[str] = field(default_factory=set)  # PASS (value-tested)
     skipped_active: set[str] = field(default_factory=set)  # PASS (baseline)
-    uncovered: set[str] = field(default_factory=set)  # FAIL (new / unlisted)
-    redundant_skips: set[str] = field(default_factory=set)  # FAIL (skip-listed AND covered)
-    stale_skips: set[str] = field(default_factory=set)  # FAIL (skip for a non-existent id)
-    unknown_covered: set[str] = field(default_factory=set)  # FAIL (test queries non-existent id)
+    uncovered: set[str] = field(default_factory=set)  # FAIL (a number nobody validates)
+    redundant_skips: set[str] = field(default_factory=set)  # FAIL (skip-listed AND tested)
+    stale_skips: set[str] = field(default_factory=set)  # FAIL (skip for a non-existent key)
+    unknown_asserted: set[str] = field(default_factory=set)  # FAIL (bare key, no catalog match)
 
     def __post_init__(self) -> None:
-        u = set(self.universe)
-        c = set(self.covered)
-        s = set(self.skips)
-        self.covered_in_universe = c & u
-        self.unknown_covered = c - u
-        self.redundant_skips = s & c
+        # Map the catalog's dotted keys by their unique column suffix so a test's
+        # bare assertion key resolves to one catalog key.
+        by_suffix: dict[str, str] = {}
+        for k in self.universe:
+            s = suffix(k)
+            if s in by_suffix:
+                raise ValueError(
+                    f"catalog suffix collision {s!r} ({by_suffix[s]} vs {k}) — "
+                    f"bare→dotted suffix mapping is unsafe; scope by metric_id instead."
+                )
+            by_suffix[s] = k
+
+        for bare in self.asserted:
+            full = by_suffix.get(bare)
+            (self.covered if full else self.unknown_asserted).add(full or bare)
+
+        u, s = set(self.universe), set(self.skips)
+        self.redundant_skips = s & self.covered
         self.stale_skips = s - u
-        self.skipped_active = (s & u) - c
-        self.uncovered = u - c - s
+        self.skipped_active = (s & u) - self.covered
+        self.uncovered = u - self.covered - s
 
     @property
     def passed(self) -> bool:
-        return not (self.uncovered or self.redundant_skips or self.stale_skips or self.unknown_covered)
+        return not (
+            self.uncovered or self.redundant_skips or self.stale_skips or self.unknown_asserted
+        )
+
+    def files_for(self, full_key: str) -> set[str]:
+        return self.asserted.get(suffix(full_key), set())
 
 
 def build_report(universe: dict[str, str], metrics_dir: Path = METRICS_DIR) -> CoverageReport:
-    """Assemble the report. `universe` comes from `universe_from_url` (the
-    metric_ids the API serves); covered + skips are local to the rig."""
+    """Assemble the report. `universe` comes from `universe_from_url` (the catalog
+    metric_keys the API serves); asserted + skips are local to the rig."""
     return CoverageReport(
         universe=universe,
-        covered=covered_from_tests(metrics_dir),
+        asserted=asserted_keys_from_tests(metrics_dir),
         skips=skip_index(),
     )
 
@@ -216,80 +255,84 @@ def build_report(universe: dict[str, str], metrics_dir: Path = METRICS_DIR) -> C
 def gate_violations(r: CoverageReport) -> list[str]:
     """Human-readable FAIL reasons. Empty list == gate PASS."""
     out: list[str] = []
-    for i in sorted(r.uncovered):
+    for k in sorted(r.uncovered):
         out.append(
-            f"FAIL {r.universe[i]!r} ({i}) — served by the API but has no test and is not "
-            f"skip-listed. Add a metrics/*.test.yaml that queries it, or add it to {_WHERE}."
+            f"FAIL `{k}` — served by the catalog but no test asserts its value and it is "
+            f"not skip-listed. Add a `find: {{metric_key: {suffix(k)}}}` + `equal`/`assert`, "
+            f"or add it to {_WHERE}."
         )
-    for i in sorted(r.redundant_skips):
-        files = ", ".join(sorted(r.covered[i]))
+    for k in sorted(r.redundant_skips):
+        files = ", ".join(sorted(r.files_for(k)))
         out.append(
-            f"FAIL {r.skips[i]['name']!r} ({i}) — skip-listed but now covered by [{files}]. "
-            f"Remove its entry from {_WHERE}."
+            f"FAIL `{k}` — skip-listed but now value-tested by [{files}]. Remove its entry "
+            f"from {_WHERE}."
         )
-    for i in sorted(r.stale_skips):
+    for k in sorted(r.stale_skips):
         out.append(
-            f"FAIL {r.skips[i]['name']!r} ({i}) — skip-listed but no longer a served metric_id "
-            f"(removed/disabled/renamed). Remove it from {_WHERE}."
+            f"FAIL `{k}` — skip-listed but no longer a catalog metric_key (removed/renamed). "
+            f"Remove it from {_WHERE}."
         )
-    for i in sorted(r.unknown_covered):
-        files = ", ".join(sorted(r.covered[i]))
+    for bare in sorted(r.unknown_asserted):
+        files = ", ".join(sorted(r.asserted[bare]))
         out.append(
-            f"FAIL metric_id {i} queried by [{files}] is not a served metric_id — typo in the "
-            f"test, or the metric was removed/disabled."
+            f"FAIL `{bare}` — asserted by [{files}] but is not a catalog metric_key (typo, or "
+            f"an unseeded key that matches 0 rows)."
         )
     return out
 
 
+def _by_table(keys) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {}
+    for k in keys:
+        groups.setdefault(k.split(".", 1)[0], []).append(k)
+    return groups
+
+
 def render_text(r: CoverageReport) -> str:
-    npass = len(r.covered_in_universe) + len(r.skipped_active)
+    cov, skp, tot = len(r.covered), len(r.skipped_active), len(r.universe)
     lines = [
-        f"Metric coverage: {'PASS' if r.passed else 'FAIL'}  "
-        f"({npass}/{len(r.universe)} pass — {len(r.covered_in_universe)} tested, "
-        f"{len(r.skipped_active)} baseline; {len(r.uncovered)} fail)",
+        f"Metric coverage (by metric_key): {'PASS' if r.passed else 'FAIL'}  "
+        f"({cov}/{tot} value-tested, {skp} baseline; {len(r.uncovered)} missing)",
     ]
-    for i in sorted(r.uncovered):
-        lines.append(f"  ❌ FAIL     {i}  {r.universe[i]}  (no test, not skip-listed)")
-    for i in sorted(r.covered_in_universe):
-        lines.append(f"  ✅ tested   {i}  {r.universe[i]}  [{', '.join(sorted(r.covered[i]))}]")
-    for i in sorted(r.skipped_active):
-        lines.append(f"  ✅ baseline {i}  {r.universe[i]}  ({r.skips[i]['reason']})")
+    for t, keys in sorted(_by_table(r.universe).items()):
+        c = sum(1 for k in keys if k in r.covered)
+        lines.append(f"  {t}: {c}/{len(keys)} tested")
     for v in gate_violations(r):
         lines.append(f"  ✗ {v}")
     return "\n".join(lines)
 
 
 def render_markdown(r: CoverageReport) -> str:
-    """Single markdown table — binary verdict per metric_id, plus a skip-list
-    hygiene footer for redundant/stale/unknown entries (which also fail)."""
-    npass = len(r.covered_in_universe) + len(r.skipped_active)
+    """Markdown status table — binary verdict per metric_key, grouped by storage
+    table, plus a skip-list-hygiene footer (redundant/stale/unknown also fail)."""
+    cov, skp, tot = len(r.covered), len(r.skipped_active), len(r.universe)
     out = [
-        "# Metric coverage — by metric_id",
+        "# Metric coverage — by metric_key",
         "",
-        f"**Gate: {'✅ PASS' if r.passed else '❌ FAIL'}.** "
-        f"{npass}/{len(r.universe)} pass "
-        f"({len(r.covered_in_universe)} tested, {len(r.skipped_active)} baseline-skipped), "
-        f"**{len(r.uncovered)} fail**.",
-        "",
-        "| verdict | basis | metric_id | name | detail |",
-        "|---|---|---|---|---|",
+        f"**Gate: {'✅ PASS' if r.passed else '❌ FAIL'}.** {cov}/{tot} value-tested, "
+        f"{skp} baseline-skipped, **{len(r.uncovered)} missing**.",
     ]
-    for i in sorted(r.uncovered):
-        out.append(f"| ❌ FAIL | missing | `{i}` | {r.universe[i]} | no test, not in skip list |")
-    for i in sorted(r.covered_in_universe):
-        out.append(f"| ✅ PASS | tested | `{i}` | {r.universe[i]} | {', '.join(sorted(r.covered[i]))} |")
-    for i in sorted(r.skipped_active):
-        out.append(f"| ✅ PASS | baseline | `{i}` | {r.universe[i]} | {r.skips[i]['reason']} |")
+    for t, keys in sorted(_by_table(r.universe).items()):
+        keys = sorted(keys)
+        c = sum(1 for k in keys if k in r.covered)
+        out += ["", f"## {t} — {c}/{len(keys)} tested", "",
+                "| verdict | metric_key | detail |", "|---|---|---|"]
+        for k in keys:
+            col = suffix(k)
+            if k in r.uncovered:
+                out.append(f"| ❌ MISSING | `{col}` | no value assertion, not skip-listed |")
+            elif k in r.covered:
+                out.append(f"| ✅ tested | `{col}` | {', '.join(sorted(r.files_for(k)))} |")
+            else:
+                out.append(f"| ⏭️ baseline | `{col}` | {r.skips[k]} |")
 
     hygiene: list[str] = []
-    for i in sorted(r.redundant_skips):
-        files = ", ".join(sorted(r.covered[i]))
-        hygiene.append(f"- `{i}` {r.skips[i]['name']} — skip-listed but now covered by [{files}]; remove from SKIP_LIST.")
-    for i in sorted(r.stale_skips):
-        hygiene.append(f"- `{i}` {r.skips[i]['name']} — skip-listed but no longer served; remove from SKIP_LIST.")
-    for i in sorted(r.unknown_covered):
-        files = ", ".join(sorted(r.covered[i]))
-        hygiene.append(f"- `{i}` queried by [{files}] is not a served metric_id; fix the test.")
+    for k in sorted(r.redundant_skips):
+        hygiene.append(f"- `{k}` skip-listed but now tested by [{', '.join(sorted(r.files_for(k)))}]; remove from SKIP_LIST.")
+    for k in sorted(r.stale_skips):
+        hygiene.append(f"- `{k}` skip-listed but no longer in the catalog; remove from SKIP_LIST.")
+    for bare in sorted(r.unknown_asserted):
+        hygiene.append(f"- `{bare}` asserted by [{', '.join(sorted(r.asserted[bare]))}] is not a catalog metric_key (typo/unseeded).")
     if hygiene:
         out += ["", "## Skip-list issues (also fail the gate)", *hygiene]
     return "\n".join(out) + "\n"
@@ -299,18 +342,17 @@ def main(argv: list[str] | None = None) -> int:
     """CLI: print the coverage table/report; exit non-zero on any gate failure.
 
     `--md` prints the markdown status table (default: the plain-text report).
-
     Reads the universe over HTTP from a running analytics-api: set
-    `ANALYTICS_API_URL` (and optionally `ANALYTICS_TENANT_ID`). The standalone CI
-    script `scripts/ci/metric_coverage.sh` boots MariaDB + analytics-api and sets
-    these for you. This module never spawns analytics-api itself.
+    `ANALYTICS_API_URL` (and optionally `ANALYTICS_TENANT_ID`). The standalone
+    script `scripts/ci/metric_coverage.sh` sets these for you. This module never
+    spawns analytics-api itself.
     """
     args = argv if argv is not None else sys.argv[1:]
     url = os.environ.get("ANALYTICS_API_URL")
     if not url:
         print(
             "metric coverage: set ANALYTICS_API_URL to a running analytics-api, then "
-            "re-run. The standalone gate `scripts/ci/metric_coverage.sh` does this for you.",
+            "re-run. The gate `scripts/ci/metric_coverage.sh` does this for you.",
             file=sys.stderr,
         )
         return 2
@@ -319,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     report = build_report(universe)
     if not report.universe:
         print(
-            "metric coverage: GET /v1/metrics returned no enabled metrics — the "
+            "metric coverage: POST /v1/catalog/get_metrics returned no metrics — the "
             "catalog isn't seeded. Check analytics-api startup / migrations.",
             file=sys.stderr,
         )

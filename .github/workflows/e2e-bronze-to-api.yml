@@ -79,8 +79,9 @@ jobs:
       # ─── Metric coverage gate (folded in from the old metric-coverage.yml) ─
       # Reuses the analytics-api image `./e2e.sh build` already produced
       # (insight-e2e-analytics-api:local) — no second compile. Boots a throwaway
-      # MariaDB + analytics-api, reads the universe from GET /v1/metrics, and
-      # fails if any served metric_id is neither tested nor in SKIP_LIST. Runs
+      # MariaDB + analytics-api, reads the catalog from POST /v1/catalog/get_metrics,
+      # and fails if any metric_key's value is neither asserted by a test nor in
+      # SKIP_LIST. Runs
       # even if the suite above failed, so both signals report (it doesn't depend
       # on the suite — only on the built image).
       - name: Set up Python (coverage gate)

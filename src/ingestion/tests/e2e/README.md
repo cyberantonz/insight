@@ -74,15 +74,15 @@ e2e/
 
 ## Metric coverage gate
 
-The gate runs as a dedicated step in the **E2E — Bronze to API** workflow (`.github/workflows/e2e-bronze-to-api.yml`), after the suite — via [`scripts/ci/metric_coverage.sh`](../../../../scripts/ci/metric_coverage.sh), *not* as a pytest test. It boots just MariaDB + analytics-api (reusing the `insight-e2e-analytics-api:local` image `./e2e.sh build` already produced — no ClickHouse/dbt/pytest, no second compile), reads the metric universe from the **API** (`GET /v1/metrics` — the enabled metric_ids `POST /v1/metrics/queries` serves, seeded by the analytics-api migrations), and cross-checks it, **by `metric_id`**, against the `metric_id`s the tests send.
+The gate runs as a dedicated step in the **E2E — Bronze to API** workflow (`.github/workflows/e2e-bronze-to-api.yml`), after the suite — via [`scripts/ci/metric_coverage.sh`](../../../../scripts/ci/metric_coverage.sh), *not* as a pytest test. It boots just MariaDB + analytics-api (reusing the `insight-e2e-analytics-api:local` image `./e2e.sh build` already produced — no ClickHouse/dbt/pytest, no second compile), reads the metric universe from the **API** (`POST /v1/catalog/get_metrics` — every enabled product `metric_key`, each a `<table>.<column>` seeded by the analytics-api migrations), and cross-checks it, **by `metric_key`**, against the keys whose value the tests assert.
 
-The verdict per metric is **binary**:
+The verdict per **metric_key** (each individual number) is **binary**:
 
-- **covered** (a `metrics/*.test.yaml` queries it) → **PASS**
+- **value-tested** — a `metrics/*.test.yaml` asserts it (`find: {metric_key: …}` paired with `equal`/`assert`) → **PASS**
 - **skip-listed** (in the inline `SKIP_LIST` in [`lib/metric_coverage.py`](lib/metric_coverage.py)) → **PASS** (baseline)
-- **neither** → **FAIL** — a new / unlisted metric must get a test or a `SKIP_LIST` entry.
+- **neither** → **FAIL** — a number nobody validates must get an assertion or a `SKIP_LIST` entry.
 
-`SKIP_LIST` is the accepted baseline and the single source of truth (no side-car file, no categories — just `(metric_id, name, reason)`). It's kept honest: a **stale** entry (id no longer served) or a **redundant** one (now covered by a test) also fails the gate, so you remove it. The overall gate is PASS iff there are no FAILs. To add/remove a skip, edit `SKIP_LIST`.
+Catalog keys are dotted (`collab_bullet_rows.m365_emails_sent`); a test asserts the bare response key (`m365_emails_sent`). The column suffix is unique across the catalog, so the gate maps bare→dotted by suffix (a future collision raises). `SKIP_LIST` is the accepted baseline and single source of truth (no side-car file — just `(metric_key, reason)`). Kept honest: a **stale** entry (key no longer in the catalog), a **redundant** one (now value-tested), or a test asserting a **non-catalog** key (typo / unseeded → matches 0 rows) all fail. PASS iff no FAILs.
 
 ```bash
 bash scripts/ci/metric_coverage.sh      # the gate: build+boot analytics-api, diff, exit non-zero on failure
@@ -90,7 +90,7 @@ bash scripts/ci/metric_coverage.sh      # the gate: build+boot analytics-api, di
 ANALYTICS_API_URL=http://localhost:18081 python3 lib/metric_coverage.py --md
 ```
 
-Coverage is by `metric_id`; one metric_id (e.g. a bullet) emits many `metric_key`s, so a covered metric_id does not guarantee every key is asserted — finer `metric_key`-level coverage can be layered on later.
+Coverage is **per metric_key**, so every number on a bullet is validated independently — one tested key of a metric does not cover the rest. Today: **18/96** value-tested; the rest are skip-listed with a reason (`reachable: …` entries are the backlog where fixtures already exist).
 
 ## Ports (loopback only)
 
