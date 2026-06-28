@@ -47,86 +47,40 @@ DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 # lib/metric_coverage.py -> lib/ -> e2e/
 _E2E_ROOT = Path(__file__).resolve().parents[1]
 METRICS_DIR = _E2E_ROOT / "metrics"
-_WHERE = "SKIP_LIST in lib/metric_coverage.py"
+_WHERE = "SKIP_LIST / SKIP_TABLES in lib/metric_coverage.py"
 
-# ── SKIP LIST (single source of truth) ───────────────────────────────────────
-# Catalog metric_keys (`<table>.<column>`) intentionally NOT value-tested — the
-# accepted baseline. Each `(metric_key, reason)`. A served metric_key that is
-# neither value-asserted by a test nor listed here FAILS the gate. When a test
-# starts asserting one, DELETE its row (a now-tested skip fails the gate).
-# The reason is shown verbatim as the skip's status in the report, so keep it a
-# concise phrase ("needs Bitbucket connector", "reachable — Jira fixtures exist").
-# "reachable …" entries are the actionable backlog (fixtures exist).
+# ── SKIP RULES (the accepted baseline; single source of truth) ───────────────
+# A served metric_key neither value-asserted by a test nor skipped here FAILS the
+# gate. Two layers, both keyed by the catalog's `<table>.<column>`:
+#
+#   SKIP_TABLES — a whole storage table (vector) with NO connector in the e2e rig:
+#     EVERY key under it is auto-skipped, so a new column needs no hand-edit.
+#   SKIP_LIST   — per-key skips for MIXED tables (the vector also has tested or
+#     differently-blocked keys). `reachable — …` rows are the actionable backlog.
+#
+# The reason is shown verbatim as the skip's status, so keep it a concise phrase.
+# Hygiene (FAIL): an explicit SKIP_LIST entry that is now value-tested, or no
+# longer a catalog key. (A table-covered key becoming tested is fine — it's just
+# covered; the table rule still covers the rest of the vector.)
+SKIP_TABLES: dict[str, str] = {
+    "ai_bullet_rows": "needs Cursor/Claude/ChatGPT connector",
+    "code_quality_bullet_rows": "needs Bitbucket/CI connector",
+    "crm_bullet_rows": "needs HubSpot connector",
+    "git_bullet_rows": "needs Bitbucket connector",
+    "ic_kpis": "composite KPI — needs Cursor+Bitbucket",
+    "support_bullet_rows": "needs Zendesk connector",
+    "wiki_bullet_rows": "needs Confluence/Outline connector",
+}
+
 SKIP_LIST: list[tuple[str, str]] = [
-    # ai_bullet_rows.*
-    ("ai_bullet_rows.active_ai_members", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.ai_loc_share2", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cc_active", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cc_cost", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cc_lines", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cc_overage", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cc_sessions", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cc_tool_accept", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cc_tool_acceptance", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.chatgpt", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.chatgpt_active", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.claude_web", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.codex_active", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.codex_lines", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.codex_sessions", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cursor_acceptance", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cursor_active", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cursor_agents", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cursor_completions", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.cursor_lines", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.prs_total", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.prs_with_cc", "needs Cursor/Claude/ChatGPT connector"),
-    ("ai_bullet_rows.team_ai_loc", "needs Cursor/Claude/ChatGPT connector"),
-    # code_quality_bullet_rows.*
-    ("code_quality_bullet_rows.build_success", "needs Bitbucket/CI connector"),
-    ("code_quality_bullet_rows.pr_cycle_time", "needs Bitbucket/CI connector"),
-    ("code_quality_bullet_rows.prs_per_dev", "needs Bitbucket/CI connector"),
-    # collab_bullet_rows.*
+    # collab_bullet_rows — Slack has no connector; Zoom fixtures exist (reachable)
     ("collab_bullet_rows.slack_active_days", "needs Slack connector"),
     ("collab_bullet_rows.slack_channel_posts", "needs Slack connector"),
     ("collab_bullet_rows.slack_messages_sent", "needs Slack connector"),
     ("collab_bullet_rows.slack_msgs_per_active_day", "needs Slack connector"),
     ("collab_bullet_rows.zoom_meeting_hours", "reachable — Zoom fixtures exist"),
     ("collab_bullet_rows.zoom_meetings", "reachable — Zoom fixtures exist"),
-    # crm_bullet_rows.*
-    ("crm_bullet_rows.avg_deal_size", "needs HubSpot connector"),
-    ("crm_bullet_rows.calls", "needs HubSpot connector"),
-    ("crm_bullet_rows.comms_per_won", "needs HubSpot connector"),
-    ("crm_bullet_rows.cycle_days", "needs HubSpot connector"),
-    ("crm_bullet_rows.deals_opened", "needs HubSpot connector"),
-    ("crm_bullet_rows.emails", "needs HubSpot connector"),
-    ("crm_bullet_rows.meetings", "needs HubSpot connector"),
-    ("crm_bullet_rows.win_rate", "needs HubSpot connector"),
-    # git_bullet_rows.*
-    ("git_bullet_rows.clean_loc", "needs Bitbucket connector"),
-    ("git_bullet_rows.commits", "needs Bitbucket connector"),
-    ("git_bullet_rows.commits_per_active_day", "needs Bitbucket connector"),
-    ("git_bullet_rows.lines_per_commit", "needs Bitbucket connector"),
-    ("git_bullet_rows.merge_rate", "needs Bitbucket connector"),
-    ("git_bullet_rows.pr_size", "needs Bitbucket connector"),
-    ("git_bullet_rows.prs_created", "needs Bitbucket connector"),
-    # ic_kpis.*
-    ("ic_kpis.ai_loc_share_pct", "composite KPI — needs Cursor+Bitbucket"),
-    ("ic_kpis.ai_sessions", "composite KPI — needs Cursor+Bitbucket"),
-    ("ic_kpis.bugs_fixed", "composite KPI — needs Cursor+Bitbucket"),
-    ("ic_kpis.focus_time_pct", "composite KPI — needs Cursor+Bitbucket"),
-    ("ic_kpis.pr_cycle_time_h", "composite KPI — needs Cursor+Bitbucket"),
-    ("ic_kpis.prs_merged", "composite KPI — needs Cursor+Bitbucket"),
-    ("ic_kpis.tasks_closed", "composite KPI — needs Cursor+Bitbucket"),
-    # support_bullet_rows.*
-    ("support_bullet_rows.support_active", "needs Zendesk connector"),
-    ("support_bullet_rows.support_csat", "needs Zendesk connector"),
-    ("support_bullet_rows.support_kb", "needs Zendesk connector"),
-    ("support_bullet_rows.support_private_comments", "needs Zendesk connector"),
-    ("support_bullet_rows.support_public_comments", "needs Zendesk connector"),
-    ("support_bullet_rows.support_solved", "needs Zendesk connector"),
-    ("support_bullet_rows.support_updates", "needs Zendesk connector"),
-    # task_delivery_bullet_rows.*
+    # task_delivery_bullet_rows — Jira fixtures exist (reachable backlog)
     ("task_delivery_bullet_rows.avg_slip", "reachable — Jira fixtures exist"),
     ("task_delivery_bullet_rows.estimation_accuracy", "reachable — Jira fixtures exist"),
     ("task_delivery_bullet_rows.flow_efficiency", "reachable — Jira fixtures exist"),
@@ -140,11 +94,6 @@ SKIP_LIST: list[tuple[str, str]] = [
     ("task_delivery_bullet_rows.task_dev_time", "reachable — Jira fixtures exist"),
     ("task_delivery_bullet_rows.task_reopen_rate", "reachable — Jira fixtures exist"),
     ("task_delivery_bullet_rows.worklog_logging_accuracy", "reachable — Jira fixtures exist"),
-    # wiki_bullet_rows.*
-    ("wiki_bullet_rows.wiki_active_authors", "needs Confluence/Outline connector"),
-    ("wiki_bullet_rows.wiki_comments", "needs Confluence/Outline connector"),
-    ("wiki_bullet_rows.wiki_edits", "needs Confluence/Outline connector"),
-    ("wiki_bullet_rows.wiki_pages_created", "needs Confluence/Outline connector"),
 ]
 
 
@@ -153,14 +102,30 @@ def suffix(metric_key: str) -> str:
     return metric_key.split(".", 1)[-1]
 
 
-def skip_index() -> dict[str, str]:
-    """`{metric_key: reason}` from `SKIP_LIST`. Raises on a duplicate key."""
-    out: dict[str, str] = {}
+def resolve_skips(universe: dict[str, str]) -> tuple[dict[str, str], set[str]]:
+    """`({metric_key: reason}, explicit_keys)` — the skip baseline for `universe`.
+
+    SKIP_LIST is per-key; SKIP_TABLES auto-skips every universe key under a
+    connector-less vector. `explicit_keys` (the SKIP_LIST keys) is what drives the
+    redundant/stale hygiene — a table-covered key is not hand-maintained, so it
+    never goes redundant or stale. Raises on a duplicate SKIP_LIST key, or one
+    whose table is already a SKIP_TABLES rule (doubly-specified).
+    """
+    explicit: dict[str, str] = {}
     for key, reason in SKIP_LIST:
-        if key in out:
+        if key in explicit:
             raise ValueError(f"duplicate metric_key in SKIP_LIST: {key}")
-        out[key] = reason
-    return out
+        if _vector(key) in SKIP_TABLES:
+            raise ValueError(
+                f"SKIP_LIST key {key} is already covered by SKIP_TABLES[{_vector(key)!r}] — "
+                f"drop the per-key entry."
+            )
+        explicit[key] = reason
+    resolved = dict(explicit)
+    for k in universe:
+        if _vector(k) in SKIP_TABLES:
+            resolved.setdefault(k, SKIP_TABLES[_vector(k)])
+    return resolved, set(explicit)
 
 
 def _universe_from_body(body: object) -> dict[str, str]:
@@ -219,7 +184,8 @@ def asserted_keys_from_tests(metrics_dir: Path = METRICS_DIR) -> dict[str, set[s
 class CoverageReport:
     universe: dict[str, str]  # metric_key (dotted) -> label
     asserted: dict[str, set[str]]  # bare metric_key -> {files}
-    skips: dict[str, str]  # metric_key (dotted) -> reason
+    skips: dict[str, str]  # metric_key (dotted) -> reason (resolved: SKIP_LIST + SKIP_TABLES)
+    explicit_skips: set[str] = field(default_factory=set)  # hand-maintained SKIP_LIST keys (drive hygiene)
 
     # Derived sets (dotted metric_keys unless noted), populated in __post_init__.
     covered: set[str] = field(default_factory=set)  # PASS (value-tested)
@@ -247,8 +213,11 @@ class CoverageReport:
             (self.covered if full else self.unknown_asserted).add(full or bare)
 
         u, s = set(self.universe), set(self.skips)
-        self.redundant_skips = s & self.covered
-        self.stale_skips = s - u
+        # redundant/stale apply only to hand-maintained SKIP_LIST entries; a
+        # table-covered key that gets tested is simply covered (its SKIP_TABLES
+        # rule stays valid for the rest of the vector).
+        self.redundant_skips = self.explicit_skips & self.covered
+        self.stale_skips = self.explicit_skips - u
         self.skipped_active = (s & u) - self.covered
         self.uncovered = u - self.covered - s
 
@@ -265,10 +234,12 @@ class CoverageReport:
 def build_report(universe: dict[str, str], metrics_dir: Path = METRICS_DIR) -> CoverageReport:
     """Assemble the report. `universe` comes from `universe_from_url` (the catalog
     metric_keys the API serves); asserted + skips are local to the rig."""
+    resolved, explicit = resolve_skips(universe)
     return CoverageReport(
         universe=universe,
         asserted=asserted_keys_from_tests(metrics_dir),
-        skips=skip_index(),
+        skips=resolved,
+        explicit_skips=explicit,
     )
 
 
