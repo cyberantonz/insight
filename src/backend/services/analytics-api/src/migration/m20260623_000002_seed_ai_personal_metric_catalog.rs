@@ -114,7 +114,9 @@ const SEEDS: &[SeedRow] = &[
         metric_key: "ai_person_counter_daily.ai_dev_agent_conversations",
         label: "AI dev conversations",
         sublabel: Some("Claude Code sessions and Codex threads"),
-        description: Some("Person-attributed coding-agent conversations from supported AI dev tools."),
+        description: Some(
+            "Person-attributed coding-agent conversations from supported AI dev tools.",
+        ),
         unit: Some("conversations"),
         format: Some("integer"),
         higher_is_better: true,
@@ -125,7 +127,9 @@ const SEEDS: &[SeedRow] = &[
         metric_key: "ai_person_counter_daily.ai_chat_assistant_conversations",
         label: "AI chat conversations",
         sublabel: Some("Chat assistant threads"),
-        description: Some("Person-attributed chat assistant conversations from supported AI chat tools."),
+        description: Some(
+            "Person-attributed chat assistant conversations from supported AI chat tools.",
+        ),
         unit: Some("conversations"),
         format: Some("integer"),
         higher_is_better: true,
