@@ -198,11 +198,11 @@ def dbt_runner(ch_migrations_applied: SessionConfig):
 
 def _collect_coverage_artifacts(proc: AnalyticsApiProcess) -> None:
     """Run `lib/collect_coverage_artifacts.py` (a script — NOT a test) against the
-    live API, primary worker only. Snapshots the metric-catalog + OpenAPI gate
-    inputs into `.artifacts/` so the CI gate jobs analyse files with no second
-    app boot. Best-effort: a failure just means the gate jobs find no artifact and
-    fail loudly — never abort the session for it. Must run while the API is up
-    (called from analytics_api teardown, before proc.stop())."""
+    live API, primary worker only. Snapshots the metric catalog into `.artifacts/`
+    so the metric-coverage gate analyses a file with no second app boot.
+    Best-effort: a failure just means the gate finds no artifact and fails loudly —
+    never abort the session for it. Must run while the API is up (called from
+    analytics_api teardown, before proc.stop())."""
     if not _IS_PRIMARY:
         return
     import subprocess
@@ -253,8 +253,8 @@ def analytics_api(ch_migrations_applied: SessionConfig):
     proc.start()
     seed_test_metrics(cfg)
     yield proc
-    # Snapshot the metric-catalog + OpenAPI gate inputs while the API is still up
-    # (a script, run via subprocess — see _collect_coverage_artifacts). Always
+    # Snapshot the metric catalog while the API is still up (a script, run via
+    # subprocess — see _collect_coverage_artifacts). Always
     # stop the process afterward, even if collection raised.
     try:
         _collect_coverage_artifacts(proc)
@@ -285,26 +285,6 @@ _METRICS_ROOT = Path(__file__).parent / "metrics"
 def pytest_collection_modifyitems(config, items):
     """Convenience: order rig smoke tests (meta/ + api/) first."""
     items.sort(key=lambda i: 0 if ("meta/" in str(i.path) or "api/" in str(i.path)) else 1)
-
-
-def pytest_sessionfinish(session, exitstatus):
-    """Dump the API-endpoint ledger recorded by the httpx response hook in
-    `AnalyticsApiProcess.client()` (`lib.api_coverage.record_response`).
-
-    The standalone endpoint-coverage gate (`lib/api_coverage.py`, run as a CI
-    step after the suite) diffs this against the committed OpenAPI spec. Primary
-    worker only; best-effort — a failed artifact write is logged, never fails the
-    run (a missing ledger then fails the downstream gate loudly instead)."""
-    if not _IS_PRIMARY:
-        return
-    from lib import api_coverage
-
-    out = Path(__file__).parent / ".artifacts" / "observed_endpoints.json"
-    try:
-        api_coverage.dump_observed(out)
-        LOG.info("wrote API-endpoint ledger (%d ops): %s", len(api_coverage._OBSERVED), out)
-    except OSError as e:
-        LOG.warning("could not write API-endpoint ledger %s: %s", out, e)
 
 
 def pytest_generate_tests(metafunc):

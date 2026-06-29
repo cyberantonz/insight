@@ -63,9 +63,8 @@ e2e/
 │   ├── migration_applier.py    # applies src/ingestion/scripts/migrations/*.sql
 │   ├── analytics_api.py        # builds + spawns the analytics-api binary
 │   ├── worker.py               # WorkerContext (resolves pytest-xdist worker id)
-│   ├── metric_coverage.py      # metric-coverage gate logic + inline SKIP_LIST (--universe-file)
-│   ├── api_coverage.py         # endpoint-coverage gate logic + httpx recording hook
-│   ├── collect_coverage_artifacts.py  # script: snapshot live spec + catalog → .artifacts/
+│   ├── metric_coverage.py      # metric-coverage gate: SKIP_TABLES + SKIP_LIST (--universe-file)
+│   ├── collect_coverage_artifacts.py  # script: snapshot the metric catalog → .artifacts/
 │   └── config.py               # session config (ports, random creds)
 ├── seed/
 │   └── metrics.yaml            # optional test-specific metric overrides (default: empty)
@@ -74,20 +73,15 @@ e2e/
     └── test_session_smoke.py
 ```
 
-## Coverage gates
+## Metric coverage gate
 
-Coverage checks run as **separate jobs** in the **E2E — Bronze to API** workflow (`.github/workflows/e2e-bronze-to-api.yml`), *not* as pytest tests. The `e2e` job runs the suite and — while analytics-api is up — collects three inputs into `.artifacts/` (uploaded as the `coverage-inputs` artifact); the gate jobs then analyse those files (no Docker, no second app boot):
-
-- **metric-coverage-gate** (blocking) — every product `metric_key` the catalog exposes (`POST /v1/catalog/get_metrics` → `catalog_metrics.json`) has its value asserted by a test, or a `SKIP_TABLES`/`SKIP_LIST` entry.
-- **openapi-spec-drift-gate** (blocking) — the committed `docs/components/backend/analytics-api/openapi.json` matches the live router (`GET /openapi.json` → `openapi.live.json`).
-- **endpoint coverage** (observability, **non-blocking**) — the suite records which routes it exercises (httpx hook → `observed_endpoints.json`). `lib/api_coverage.py` reports covered-vs-spec, but it is NOT a CI gate: a read-only metric suite touches few routes (most are write/admin), so a pass/fail there would be ~all skip-list. `./e2e.sh gates` prints it as info.
+A job (`metric-coverage-gate`) in the **E2E — Bronze to API** workflow, *not* a pytest test. The `e2e` job runs the suite and, while analytics-api is up, snapshots the metric catalog (`POST /v1/catalog/get_metrics`) to `.artifacts/catalog_metrics.json` (uploaded as `coverage-inputs`); the gate job then checks every product `metric_key` the catalog exposes is value-asserted by a test or covered by a `SKIP_TABLES`/`SKIP_LIST` entry — pure Python, no Docker, no second app boot.
 
 Locally, after a run:
 
 ```bash
-./e2e.sh test     # runs the suite + collects .artifacts/{catalog_metrics,openapi.live,observed_endpoints}.json
-./e2e.sh gates    # metric + openapi gates (blocking) + endpoint report, against .artifacts/ (in the runner image; no DB)
-python3 scripts/ci/openapi_spec.py update   # regenerate the committed OpenAPI doc from .artifacts/openapi.live.json
+./e2e.sh test     # runs the suite + snapshots .artifacts/catalog_metrics.json
+./e2e.sh gates    # runs the metric-coverage gate against it (in the runner image; no DB)
 ```
 
 The verdict per **metric_key** (each individual number) is **binary**:

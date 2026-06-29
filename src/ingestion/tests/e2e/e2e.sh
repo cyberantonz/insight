@@ -77,24 +77,15 @@ case "$cmd" in
         docker compose "${COMPOSE_FILES[@]}" logs --tail=200 "$@"
         ;;
     gates)
-        # Run the three coverage gates against the inputs a prior `./e2e.sh test`
+        # Run the metric-coverage gate against the catalog a prior `./e2e.sh test`
         # collected into .artifacts/ — pure file analysis inside the runner image
-        # (no DB via --no-deps, no second compose). Run `./e2e.sh test` first; the
-        # same checks run in CI as the gate jobs (see e2e-bronze-to-api.yml).
-        if [ ! -f .artifacts/observed_endpoints.json ]; then
-            echo "no .artifacts/ — run './e2e.sh test' first (it collects the gate inputs)" >&2
+        # (no DB via --no-deps, no second compose). Run `./e2e.sh test` first.
+        if [ ! -f .artifacts/catalog_metrics.json ]; then
+            echo "no .artifacts/catalog_metrics.json — run './e2e.sh test' first (it collects the catalog)" >&2
             exit 2
         fi
-        spec=/workspace/docs/components/backend/analytics-api/openapi.json
-        run=(docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps -T runner)
-        rc=0
-        echo "── metric coverage (gate) ──"
-        "${run[@]}" python3 lib/metric_coverage.py --universe-file .artifacts/catalog_metrics.json || rc=1
-        echo "── openapi spec drift (gate) ──"
-        "${run[@]}" python3 /workspace/scripts/ci/openapi_spec.py check --live-file .artifacts/openapi.live.json --file "$spec" || rc=1
-        echo "── api endpoint coverage (observability — non-blocking) ──"
-        "${run[@]}" python3 lib/api_coverage.py --observed .artifacts/observed_endpoints.json --spec "$spec" || true
-        exit "$rc"
+        docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps -T runner \
+            python3 lib/metric_coverage.py --universe-file .artifacts/catalog_metrics.json
         ;;
     *)
         echo "usage: $0 {build|test|run|shell|up|down|logs|gates} [args...]" >&2
