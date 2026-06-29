@@ -196,8 +196,8 @@ def dbt_runner(ch_migrations_applied: SessionConfig):
     runner.cleanup()
 
 
-def _collect_coverage_artifacts(proc: AnalyticsApiProcess) -> None:
-    """Run `lib/collect_coverage_artifacts.py` (a script — NOT a test) against the
+def _collect_metrics(proc: AnalyticsApiProcess) -> None:
+    """Run `lib/collect_metrics.py` (a script — NOT a test) against the
     live API, primary worker only. Snapshots the metric catalog into `.artifacts/`
     so the metric-coverage gate analyses a file with no second app boot.
     Best-effort: a failure just means the gate finds no artifact and fails loudly —
@@ -208,7 +208,7 @@ def _collect_coverage_artifacts(proc: AnalyticsApiProcess) -> None:
     import subprocess
     import sys
 
-    script = Path(__file__).parent / "lib" / "collect_coverage_artifacts.py"
+    script = Path(__file__).parent / "lib" / "collect_metrics.py"
     out_dir = Path(__file__).parent / ".artifacts"
     result = subprocess.run(
         [
@@ -254,10 +254,10 @@ def analytics_api(ch_migrations_applied: SessionConfig):
     seed_test_metrics(cfg)
     yield proc
     # Snapshot the metric catalog while the API is still up (a script, run via
-    # subprocess — see _collect_coverage_artifacts). Always
+    # subprocess — see _collect_metrics). Always
     # stop the process afterward, even if collection raised.
     try:
-        _collect_coverage_artifacts(proc)
+        _collect_metrics(proc)
     finally:
         proc.stop()
 

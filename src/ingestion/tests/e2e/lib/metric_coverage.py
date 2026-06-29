@@ -22,7 +22,7 @@ catalog) or a REDUNDANT one (now value-tested) also fails. PASS iff no FAILs.
 
 This module never spawns analytics-api. CI: the `metric-coverage-gate` job reads
 the universe from `--universe-file catalog_metrics.json` — the artifact the e2e
-run collects (lib/collect_coverage_artifacts.py) — so no app boot. Locally:
+run collects (lib/collect_metrics.py) — so no app boot. Locally:
 `./e2e.sh test` then `./e2e.sh gates`. Ad hoc against a running API:
 `ANALYTICS_API_URL=http://… python3 lib/metric_coverage.py [--md]`.
 """

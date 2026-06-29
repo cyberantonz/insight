@@ -64,7 +64,7 @@ e2e/
 │   ├── analytics_api.py        # builds + spawns the analytics-api binary
 │   ├── worker.py               # WorkerContext (resolves pytest-xdist worker id)
 │   ├── metric_coverage.py      # metric-coverage gate: SKIP_TABLES + SKIP_LIST (--universe-file)
-│   ├── collect_coverage_artifacts.py  # script: snapshot the metric catalog → .artifacts/
+│   ├── collect_metrics.py  # script: snapshot the metric catalog → .artifacts/
 │   └── config.py               # session config (ports, random creds)
 ├── seed/
 │   └── metrics.yaml            # optional test-specific metric overrides (default: empty)

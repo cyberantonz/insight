@@ -11,7 +11,7 @@ name: E2E — Bronze to API
 # analytics-api is already up — snapshots the metric catalog into `.artifacts/`,
 # which it uploads. The metric-coverage-gate job then analyses it as a pure-Python
 # check (no Docker, no app boot). See
-# src/ingestion/tests/e2e/lib/{metric_coverage,collect_coverage_artifacts}.py.
+# src/ingestion/tests/e2e/lib/{metric_coverage,collect_metrics}.py.
 #
 # Specs: docs/domain/bronze-to-api-e2e/specs/
 # Code:  src/ingestion/tests/e2e/
@@ -81,7 +81,7 @@ jobs:
       # build (which compiles analytics-api + enrich) dominates the job.
       #
       # The suite ALSO snapshots the metric catalog to .artifacts/catalog_metrics.json
-      # (lib/collect_coverage_artifacts.py, while analytics-api is up) — the
+      # (lib/collect_metrics.py, while analytics-api is up) — the
       # metric-coverage-gate job below analyses it, no second app boot.
       - name: Run E2E suite
         run: ./e2e.sh test --tb=short -q

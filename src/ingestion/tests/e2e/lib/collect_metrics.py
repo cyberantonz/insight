@@ -7,7 +7,7 @@ metric-coverage gate can read a file with no second app boot. Writes
 ``catalog_metrics.json`` (← POST /v1/catalog/get_metrics) into ``--out-dir``.
 
 Standalone:
-    python3 lib/collect_coverage_artifacts.py \
+    python3 lib/collect_metrics.py \
         --url http://127.0.0.1:8081 --out-dir .artifacts \
         --tenant 00000000-0000-0000-0000-000000000001
 """
