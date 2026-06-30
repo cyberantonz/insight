@@ -56,7 +56,7 @@ e2e/
 ├── compose/
 │   ├── docker-compose.yml      # ClickHouse + MariaDB, loopback-only
 │   └── .env.example            # example creds (real values generated per-session)
-├── lib/                    # framework Python package
+├── lib/                        # framework Python package
 │   ├── compose.py              # docker compose up/down + healthcheck wait
 │   ├── clickhouse.py           # CH HTTP client wrapper
 │   ├── mariadb.py              # MariaDB connection helper
@@ -64,7 +64,7 @@ e2e/
 │   ├── analytics_api.py        # builds + spawns the analytics-api binary
 │   ├── worker.py               # WorkerContext (resolves pytest-xdist worker id)
 │   ├── metric_coverage.py      # metric-coverage gate: SKIP_TABLES + SKIP_LIST (--universe-file)
-│   ├── collect_metrics.py  # script: snapshot the metric catalog → .artifacts/
+│   ├── collect_metrics.py      # script: snapshot the metric catalog → .artifacts/
 │   └── config.py               # session config (ports, random creds)
 ├── seed/
 │   └── metrics.yaml            # optional test-specific metric overrides (default: empty)

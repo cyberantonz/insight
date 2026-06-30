@@ -78,6 +78,7 @@ SKIP_LIST: list[tuple[str, str]] = [
     ("collab_bullet_rows.slack_channel_posts", "needs Slack connector"),
     ("collab_bullet_rows.slack_messages_sent", "needs Slack connector"),
     ("collab_bullet_rows.slack_msgs_per_active_day", "needs Slack connector"),
+    ("collab_bullet_rows.slack_dm_ratio", "needs Slack connector"),
     ("collab_bullet_rows.zoom_meeting_hours", "reachable — Zoom fixtures exist"),
     ("collab_bullet_rows.zoom_meetings", "reachable — Zoom fixtures exist"),
     # task_delivery_bullet_rows — Jira fixtures exist (reachable backlog)
