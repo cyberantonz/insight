@@ -19,9 +19,10 @@ description: >
   bronze_zoom.participants is ReplacingMergeTree ORDER BY email, so EVERY
   participant row for one email collapses to a single bronze row on RMT merge —
   a person can contribute at most ONE distinct Zoom meeting per day regardless of
-  how many participant rows are seeded. The cross-source-additive proof therefore
-  lives in collab_meeting_hours (one Zoom row per member, which survives); here
-  the count is Teams-only so each member's value is exactly meetingsAttendedCount.
+  how many participant rows are seeded. This fixture is therefore Teams-only —
+  each member's value is exactly meetingsAttendedCount. (Teams+Zoom cross-source
+  additivity is not asserted in the single-scope suite; it would be its own
+  fixture if reintroduced.)
   Cases: custom scope (single window over the department) · empty window.
 
 bronze:

@@ -93,12 +93,11 @@ The verdict per **metric_key** (each individual number) is **binary**:
 Catalog keys are dotted (`collab_bullet_rows.m365_emails_sent`); a test asserts the bare response key (`m365_emails_sent`). The column suffix is unique across the catalog, so the gate maps bare→dotted by suffix (a future collision raises). `SKIP_LIST` is the accepted baseline and single source of truth (no side-car file — just `(metric_key, reason)`). Kept honest: a **stale** entry (key no longer in the catalog), a **redundant** one (now value-tested), or a test asserting a **non-catalog** key (typo / unseeded → matches 0 rows) all fail. PASS iff no FAILs.
 
 ```bash
-./e2e.sh gates                          # all three gates against .artifacts/ (after ./e2e.sh test)
-# ad hoc against a running analytics-api (no artifact):
-ANALYTICS_API_URL=http://localhost:18081 python3 lib/metric_coverage.py --md
+# ad hoc against a running analytics-api (instead of the collected artifact):
+ANALYTICS_API_URL=http://localhost:18081 python3 lib/metric_coverage.py
 ```
 
-Coverage is **per metric_key**, so every number on a bullet is validated independently — one tested key of a metric does not cover the rest. Today: **18/96** value-tested; the rest are skip-listed with a reason (`reachable: …` entries are the backlog where fixtures already exist).
+Coverage is **per metric_key**, so every number on a bullet is validated independently — one tested key of a metric does not cover the rest. Today: **44/96** value-tested; the rest are skip-listed with a reason (`reachable — …` entries are the backlog where fixtures already exist).
 
 ## Ports (loopback only)
 

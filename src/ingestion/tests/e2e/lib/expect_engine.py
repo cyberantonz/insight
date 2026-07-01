@@ -48,8 +48,18 @@ _STAT_FIELDS = ("value", "median", "range_min", "range_max", "p25", "p75")
 
 
 def _stat_refs_in_cel(expr: str) -> set[str]:
-    """Stat field names referenced (as whole words) in a CEL `assert` expr."""
-    return {f for f in _STAT_FIELDS if re.search(rf"\b{f}\b", expr)}
+    """Stat fields READ off the matched row (`it.<field>` or `it["<field>"]`) in a
+    CEL `assert`. Scoped to actual `it` access so a stat NAME that merely appears
+    in a string literal or on another object (e.g. `it.metric_key == "p75"`) does
+    NOT count as asserting that stat — otherwise a fixture could bypass the
+    no-unasserted-stat gate by mentioning the name. `_STAT_FIELDS` are literals,
+    but `re.escape` keeps the pattern hardcoded-safe regardless."""
+    refs: set[str] = set()
+    for f in _STAT_FIELDS:
+        name = re.escape(f)
+        if re.search(rf"\bit\.{name}\b", expr) or re.search(rf'\bit\[["\']{name}["\']\]', expr):
+            refs.add(f)
+    return refs
 
 
 def _values_equal(got: Any, exp: Any) -> bool:

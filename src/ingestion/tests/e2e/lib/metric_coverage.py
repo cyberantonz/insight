@@ -169,9 +169,13 @@ def asserted_keys_from_tests(metrics_dir: Path = METRICS_DIR) -> dict[str, set[s
     A key counts only when a `find: {metric_key: …}` selector is paired with an
     `equal` or `assert` in the SAME expect rule (i.e. the value is validated, not
     merely selected). Plain `safe_load` — a metric_key is always a literal.
+
+    Recurses (`rglob`) so nested fixtures are seen — the rig discovers tests as
+    `metrics/**/*.test.yaml` (`lib.fixture_loader.discover_tests`); a flat glob
+    here would miss a nested fixture and flag its key as falsely uncovered.
     """
     out: dict[str, set[str]] = {}
-    for path in sorted(metrics_dir.glob("*.test.yaml")):
+    for path in sorted(metrics_dir.rglob("*.test.yaml")):
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for case in doc.get("cases") or []:
             for rule in case.get("expect") or []:
@@ -194,6 +198,7 @@ class CoverageReport:
     uncovered: set[str] = field(default_factory=set)  # FAIL (a number nobody validates)
     redundant_skips: set[str] = field(default_factory=set)  # FAIL (skip-listed AND tested)
     stale_skips: set[str] = field(default_factory=set)  # FAIL (skip for a non-existent key)
+    stale_tables: set[str] = field(default_factory=set)  # FAIL (SKIP_TABLES vector no longer in the catalog)
     unknown_asserted: set[str] = field(default_factory=set)  # FAIL (bare key, no catalog match)
 
     def __post_init__(self) -> None:
@@ -219,13 +224,22 @@ class CoverageReport:
         # rule stays valid for the rest of the vector).
         self.redundant_skips = self.explicit_skips & self.covered
         self.stale_skips = self.explicit_skips - u
+        # A whole SKIP_TABLES vector can also go stale: if the catalog serves NO
+        # key under it, the table rule is dead and must be removed. (A table whose
+        # keys are all now tested is NOT flagged — the rule still exists to
+        # auto-cover future keys of that connector-less vector.)
+        self.stale_tables = {t for t in SKIP_TABLES if not any(_vector(k) == t for k in u)}
         self.skipped_active = (s & u) - self.covered
         self.uncovered = u - self.covered - s
 
     @property
     def passed(self) -> bool:
         return not (
-            self.uncovered or self.redundant_skips or self.stale_skips or self.unknown_asserted
+            self.uncovered
+            or self.redundant_skips
+            or self.stale_skips
+            or self.stale_tables
+            or self.unknown_asserted
         )
 
     def files_for(self, full_key: str) -> set[str]:
@@ -263,6 +277,11 @@ def gate_violations(r: CoverageReport) -> list[str]:
         out.append(
             f"FAIL `{k}` — skip-listed but no longer a catalog metric_key (removed/renamed). "
             f"Remove it from {_WHERE}."
+        )
+    for t in sorted(r.stale_tables):
+        out.append(
+            f"FAIL SKIP_TABLES[`{t}`] — the catalog serves no metric_key under this vector "
+            f"(connector/table removed or renamed). Remove the table rule from {_WHERE}."
         )
     for bare in sorted(r.unknown_asserted):
         files = ", ".join(sorted(r.asserted[bare]))
