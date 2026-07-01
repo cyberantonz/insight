@@ -64,6 +64,7 @@ _WHERE = "SKIP_LIST / SKIP_TABLES in lib/metric_coverage.py"
 # covered; the table rule still covers the rest of the vector.)
 SKIP_TABLES: dict[str, str] = {
     "ai_bullet_rows": "needs Cursor/Claude/ChatGPT connector",
+    "ai_person_counter_daily": "needs Cursor/Claude/ChatGPT connector",
     "code_quality_bullet_rows": "needs Bitbucket/CI connector",
     "crm_bullet_rows": "needs HubSpot connector",
     "git_bullet_rows": "needs Bitbucket connector",
