@@ -94,7 +94,7 @@ cases:
         assert: "result.status == 'ok'"
       - in: collaboration
         find: { metric_key: collab_person_counter_daily.messages_sent }
-        equal: { value: 20 }
+        equal: { value: 20, median: 30, range_min: 10, range_max: 50, p25: 20, p75: 40 }
 
   # ── EMPTY window: no chat rows in range → honest-NULL (no item, not a 0) ──
   - name: "messages_sent — EMPTY window (no source → NULL, not 0)"
