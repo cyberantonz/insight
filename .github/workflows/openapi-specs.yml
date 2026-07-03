@@ -1,0 +1,52 @@
+name: OpenAPI Specs
+
+# Offline OpenAPI contract drift gate — checks that the committed OpenAPI docs
+# under docs/components/backend/<service>/ still correspond to the backend code.
+# Kept SEPARATE from the E2E suite (e2e-bronze-to-api.yml) because it doesn't
+# need the bronze→API stack: each service emits its OpenAPI document from its
+# own code and scripts/ci/openapi_spec.py diffs it against the committed doc.
+#
+#   • analytics — the offline `analytics openapi` subcommand (no DB,
+#     no HTTP listener; see api::openapi_document).
+
+on:
+  # Deliberately NO `paths:` filter — this is meant to be a required status
+  # check on main, and a path-filtered required check never reports on PRs
+  # outside the filter (they hang on "Expected" forever). Running on every PR
+  # keeps the gate uniform.
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ─── analytics — offline emit via the `openapi` subcommand ───────────────
+  analytics:
+    name: OpenAPI spec drift gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/backend -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate the OpenAPI doc offline and drift-check it
+        run: |
+          # `analytics openapi` builds offline and prints the doc; a build
+          # failure here should abort loudly under the runner's default `set -e`.
+          (cd src/backend && cargo run --quiet -p analytics --bin analytics -- openapi) > openapi.live.json
+          # Relax errexit from here: we capture the drift-check rc ourselves,
+          # write the committed-vs-generated diff to the step summary, and emit a
+          # friendly ::error:: before exiting non-zero. Without this, the runner's
+          # `set -eo pipefail` aborts at the failing pipe and skips all reporting.
+          set +e
+          python3 scripts/ci/openapi_spec.py check --live-file openapi.live.json | tee openapi_drift.txt
+          rc=${PIPESTATUS[0]}
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then { echo '```'; cat openapi_drift.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ "$rc" -ne 0 ]; then echo "::error::OpenAPI spec drift — docs/components/backend/analytics/openapi.json is stale. Regenerate: (cd src/backend && cargo run -p analytics -- openapi) > docs/components/backend/analytics/openapi.json"; fi
+          exit "$rc"
