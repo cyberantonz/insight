@@ -6,7 +6,15 @@ models:
       Unified per-person per-day AI developer tool usage across Cursor,
       Claude Code (from Claude Enterprise for Enterprise orgs; from Claude Admin
       for Admin-only orgs), GitHub Copilot, and future sources (Windsurf, Codex).
-      One row per (tenant, email, day, tool). Feeds Gold metrics:
+      One row per (tenant, email, day, tool).
+      CONTRACT — activity invariant: a row exists ONLY when the person had real
+      activity with the tool that day. Every staging model in the
+      silver:class_ai_dev_usage tag must gate emission on a source-appropriate
+      activity signal (cursor: isActive=true; claude-team: status='active';
+      claude-enterprise/copilot/chatgpt-team: activity-counter filters).
+      Downstream consumers (insight.ai_metric_observations active_day) rely on
+      row existence and must NOT re-derive activity from counters.
+      Feeds Gold metrics:
       cursor_active / cc_active / active_ai_members / ai_tools / ai_sessions /
       cursor_acceptance / cc_tool_acceptance / cursor_completions /
       cursor_agents / cursor_lines / cc_sessions / cc_lines / ai_loc_share_pct
@@ -57,6 +65,21 @@ models:
           - accepted_values:
               arguments:
                 values: ['cursor', 'claude_code', 'copilot', 'windsurf', 'codex']
+      - name: tool_label
+        description: >
+          Display label for the tool, declared by the emitting staging model
+          (the connector owns its display name). Consumed by Gold dimension
+          tuples; no label mapping may live downstream.
+        tests:
+          - not_null
+      - name: conversation_count
+        description: >
+          Dev-tool conversations/threads on this day, populated ONLY by
+          connectors whose source actually reports them (Claude Code sessions,
+          Codex threads). Structural NULL where the source has no conversation
+          concept (Cursor, Copilot) — never a synthetic marker. Gold
+          dev_conversations sums this column with no tool filter; a connector
+          opts in by mapping the column.
       - name: session_count
         description: "Sessions recorded on this day. For Cursor: 1 per active day (Cursor only exposes an is-active flag, not session counts)."
         tests:
@@ -250,7 +273,15 @@ models:
       Unified per-person per-day AI assistant surface usage. Covers
       Claude Enterprise chat, office (Excel/PowerPoint), cowork, and cross
       (surface-agnostic counters, currently web_search) surfaces.
-      One row per (tenant, email, day, surface). Feeds Gold metrics for
+      One row per (tenant, email, day, surface).
+      CONTRACT — activity invariant: a row exists ONLY when the person had real
+      activity on the surface that day. Every staging model in the
+      silver:class_ai_assistant_usage tag must gate emission on its surface
+      counters (claude-enterprise: per-surface counter filters; chatgpt-team:
+      chat counter filter). Downstream consumers
+      (insight.ai_metric_observations active_day) rely on row existence and
+      must NOT re-derive activity from counters.
+      Feeds Gold metrics for
       assistant adoption: chat_active / excel_active / powerpoint_active /
       cowork_active / cross_active / ai_adoption_pct (email IS NOT NULL
       AND conversation_count > 0).
@@ -286,6 +317,13 @@ models:
           - accepted_values:
               arguments:
                 values: ['claude', 'chatgpt', 'gemini']
+      - name: tool_label
+        description: >
+          Display label for the assistant vendor, declared by the emitting
+          staging model. Consumed by Gold dimension tuples; no label mapping
+          may live downstream.
+        tests:
+          - not_null
       - name: surface
         description: >
           Per-vendor surface discriminator. For tool='claude': 'chat' = Claude.ai
@@ -298,6 +336,13 @@ models:
           - accepted_values:
               arguments:
                 values: ['chat', 'excel', 'powerpoint', 'cowork', 'cross']
+      - name: surface_label
+        description: >
+          Display label for the surface, declared by the emitting staging
+          model. Consumed by Gold dimension tuples; no label mapping may live
+          downstream.
+        tests:
+          - not_null
       - name: session_count
         description: >
           Number of distinct sessions on the surface.

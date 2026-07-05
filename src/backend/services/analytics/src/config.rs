@@ -51,6 +51,25 @@ pub struct GearConfig {
 
     /// Metric Catalog configuration (DESIGN §3.5).
     pub metric_catalog: MetricCatalogConfig,
+
+    #[serde(default)]
+    pub metric_results: MetricResultsConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MetricResultsConfig {
+    /// Single-tenant warehouse mapping. When set, EVERY authenticated tenant's
+    /// metric-results queries read this warehouse tenant id instead of the
+    /// caller's own tenant. Correct only for single-tenant installs where the
+    /// control-plane tenant UUID differs from the warehouse `tenant_id`
+    /// strings. Setting this on a multi-tenant install would expose one
+    /// tenant's warehouse data to all tenants, so startup refuses to boot
+    /// unless the install declares itself single-tenant via
+    /// `metric_catalog.tenant_default_id`, and logs a warning when active.
+    ///
+    /// Env: `ANALYTICS__metric_results__single_tenant_warehouse_id`.
+    #[serde(default)]
+    pub single_tenant_warehouse_id: Option<String>,
 }
 
 impl Default for GearConfig {
@@ -65,6 +84,7 @@ impl Default for GearConfig {
             identity_url: String::new(),
             redis_url: String::new(),
             metric_catalog: MetricCatalogConfig::default(),
+            metric_results: MetricResultsConfig::default(),
         }
     }
 }

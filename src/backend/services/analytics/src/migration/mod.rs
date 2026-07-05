@@ -45,6 +45,7 @@ mod m20260623_000002_seed_ai_personal_metric_catalog;
 mod m20260624_000001_collab_zulip_chat;
 mod m20260624_000002_seed_zulip_collab_catalog;
 mod m20260624_000003_ic_chart_loc_git_breakdown;
+mod m20260625_000001_metric_definitions;
 
 use sea_orm_migration::prelude::*;
 
@@ -99,6 +100,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260624_000001_collab_zulip_chat::Migration),
             Box::new(m20260624_000002_seed_zulip_collab_catalog::Migration),
             Box::new(m20260624_000003_ic_chart_loc_git_breakdown::Migration),
+            Box::new(m20260625_000001_metric_definitions::Migration),
         ]
     }
 }
@@ -120,6 +122,30 @@ pub const REQUIRED_CHECKS_BY_TABLE: &[(&str, &[&str])] = &[
     (
         "threshold_lock_audit",
         m20260522_000003_threshold_lock_audit::REQUIRED_CHECKS,
+    ),
+    (
+        "metric_sources",
+        m20260625_000001_metric_definitions::REQUIRED_SOURCE_CHECKS,
+    ),
+    (
+        "metric_source_measures",
+        m20260625_000001_metric_definitions::REQUIRED_SOURCE_MEASURE_CHECKS,
+    ),
+    (
+        "metric_source_dimensions",
+        m20260625_000001_metric_definitions::REQUIRED_SOURCE_DIMENSION_CHECKS,
+    ),
+    (
+        "metric_definitions",
+        m20260625_000001_metric_definitions::REQUIRED_DEFINITION_CHECKS,
+    ),
+    (
+        "metric_definition_inputs",
+        m20260625_000001_metric_definitions::REQUIRED_INPUT_CHECKS,
+    ),
+    (
+        "metric_definition_dimensions",
+        m20260625_000001_metric_definitions::REQUIRED_DIMENSION_CHECKS,
     ),
 ];
 
@@ -156,6 +182,30 @@ mod tests {
             (
                 "threshold_lock_audit",
                 m20260522_000003_threshold_lock_audit::REQUIRED_CHECKS,
+            ),
+            (
+                "metric_sources",
+                m20260625_000001_metric_definitions::REQUIRED_SOURCE_CHECKS,
+            ),
+            (
+                "metric_source_measures",
+                m20260625_000001_metric_definitions::REQUIRED_SOURCE_MEASURE_CHECKS,
+            ),
+            (
+                "metric_source_dimensions",
+                m20260625_000001_metric_definitions::REQUIRED_SOURCE_DIMENSION_CHECKS,
+            ),
+            (
+                "metric_definitions",
+                m20260625_000001_metric_definitions::REQUIRED_DEFINITION_CHECKS,
+            ),
+            (
+                "metric_definition_inputs",
+                m20260625_000001_metric_definitions::REQUIRED_INPUT_CHECKS,
+            ),
+            (
+                "metric_definition_dimensions",
+                m20260625_000001_metric_definitions::REQUIRED_DIMENSION_CHECKS,
             ),
         ];
 
