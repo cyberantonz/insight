@@ -197,13 +197,24 @@ class CoverageReport:
         # (its declared 2xx, unless EXPECTED_STATUS overrides) — a route only
         # ever observed erroring is touched, not covered.
         self.status_unsatisfied: dict[str, tuple[set[int], set[int]]] = {}
+        self.unconstrained: list[str] = []  # FAIL: no declared 2xx and no override
+        self.redundant_expected: list[str] = []  # FAIL: override masks a satisfied 2xx
         for op in self.covered:
-            required = set(
-                EXPECTED_STATUS.get(op, frozenset(c for c in self.spec_ops[op] if 200 <= c < 300))
-            )
+            declared_2xx = frozenset(c for c in self.spec_ops[op] if 200 <= c < 300)
+            required = set(EXPECTED_STATUS.get(op, declared_2xx))
             seen = self.validated[op]
-            if required and not (required & seen):
+            if not required:
+                # An op declaring no 2xx and carrying no override would be
+                # accepted on ANY status — require an explicit override so the
+                # expectation is stated, never defaulted away.
+                self.unconstrained.append(op)
+            elif not (required & seen):
                 self.status_unsatisfied[op] = (required, seen)
+            if op in EXPECTED_STATUS and (declared_2xx & seen):
+                # The op now answers a declared 2xx — the override is stale
+                # (e.g. persons gaining a real identity backend) and could
+                # mask a regression on this op; actualize it.
+                self.redundant_expected.append(op)
         self.stale_expected = sorted(op for op in EXPECTED_STATUS if op not in ops)
 
     @property
@@ -214,6 +225,8 @@ class CoverageReport:
             or self.stale_skips
             or self.status_unsatisfied
             or self.stale_expected
+            or self.unconstrained
+            or self.redundant_expected
         )
 
 
@@ -242,6 +255,16 @@ def gate_violations(r: CoverageReport) -> list[str]:
         )
     for op in r.stale_expected:
         out.append(f"STALE EXPECTED_STATUS: {op} is no longer in the spec — drop the override")
+    for op in r.unconstrained:
+        out.append(
+            f"UNCONSTRAINED: {op} declares no 2xx and has no EXPECTED_STATUS override "
+            f"— state the expected status explicitly"
+        )
+    for op in r.redundant_expected:
+        out.append(
+            f"REDUNDANT EXPECTED_STATUS: {op} now answers a declared 2xx — "
+            f"drop or actualize the override"
+        )
     return out
 
 
