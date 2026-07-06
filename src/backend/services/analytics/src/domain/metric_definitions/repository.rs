@@ -278,7 +278,9 @@ fn classify_inputs(rows: Vec<InputRow>) -> HashMap<Uuid, ClassifiedInputs> {
                 Some((role, observation_source))
             }
             (Some(_), Some(SourceKind::CustomObservationSql), _) => {
-                *entry = ClassifiedInputs::Unavailable;
+                if !matches!(entry, ClassifiedInputs::Corrupt) {
+                    *entry = ClassifiedInputs::Unavailable;
+                }
                 continue;
             }
             _ => None,
@@ -922,6 +924,22 @@ mod tests {
         let disabled = input_row(id, "value", false, "ok");
         let available = input_row(id, "value", true, "ok");
         let classified = classify_inputs(vec![corrupt, disabled, available]);
+        assert!(matches!(
+            classified.get(&id),
+            Some(ClassifiedInputs::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn classify_corrupt_is_not_downgraded_by_later_custom_sql_row() {
+        let id = Uuid::now_v7();
+        let corrupt = InputRow {
+            input_role: "nonsense".to_owned(),
+            ..input_row(id, "value", true, "ok")
+        };
+        let mut custom = input_row(id, "value", true, "ok");
+        custom.source_kind = "custom_observation_sql".to_owned();
+        let classified = classify_inputs(vec![corrupt, custom]);
         assert!(matches!(
             classified.get(&id),
             Some(ClassifiedInputs::Corrupt)
