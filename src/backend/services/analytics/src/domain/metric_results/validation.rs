@@ -441,6 +441,7 @@ mod tests {
                 key: "ai.accepted_lines".to_owned(),
                 label: "AI-added lines".to_owned(),
                 description: None,
+                explanation: None,
                 entity_type: "person".to_owned(),
                 format: MetricFormat::Integer,
                 unit: None,

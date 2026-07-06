@@ -141,6 +141,7 @@ metric_definition_dimensions
 metric_key
 label
 description
+explanation
 unit
 format
 direction
@@ -245,6 +246,7 @@ Every metric result also includes:
 metric_key
 label
 description
+explanation
 unit
 format
 direction
@@ -412,7 +414,8 @@ Frontend collection rendering:
 - requests metric keys and views.
 - treats configured required views as required.
 - normalizes response arrays only for local lookup.
-- renders using returned label, unit, format, direction, and computation.
+- renders using returned label, description, explanation, unit, format,
+  direction, and computation.
 - owns chart choice and layout.
 
 Backend responses do not include chart metadata.

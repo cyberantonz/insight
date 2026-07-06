@@ -107,6 +107,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         metric_key VARCHAR(128) NOT NULL,
         label VARCHAR(128) NOT NULL,
         description VARCHAR(2048) NULL,
+        explanation VARCHAR(4096) NULL,
         unit VARCHAR(32) NULL,
         format ENUM('integer','decimal','currency','percent') NOT NULL,
         direction ENUM('higher_is_better','lower_is_better','neutral') NOT NULL,

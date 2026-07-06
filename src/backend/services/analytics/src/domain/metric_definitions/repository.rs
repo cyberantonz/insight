@@ -19,6 +19,7 @@ struct DefinitionRow {
     metric_key: String,
     label: String,
     description: Option<String>,
+    explanation: Option<String>,
     unit: Option<String>,
     format: String,
     direction: String,
@@ -188,6 +189,7 @@ async fn fetch_definition_rows(
             d.metric_key AS metric_key, \
             d.label AS label, \
             d.description AS description, \
+            d.explanation AS explanation, \
             d.unit AS unit, \
             d.format AS format, \
             d.direction AS direction, \
@@ -447,6 +449,7 @@ fn build_base(
         key: row.metric_key.clone(),
         label: row.label.clone(),
         description: row.description.clone(),
+        explanation: row.explanation.clone(),
         entity_type: row.entity_type.clone(),
         format,
         unit: row.unit.clone(),
@@ -719,6 +722,7 @@ mod tests {
             metric_key: metric_key.to_owned(),
             label: "Label".to_owned(),
             description: None,
+            explanation: None,
             unit: None,
             format: "integer".to_owned(),
             direction: "neutral".to_owned(),

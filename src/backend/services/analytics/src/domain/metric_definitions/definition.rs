@@ -87,6 +87,7 @@ pub struct MetricBase {
     pub key: String,
     pub label: String,
     pub description: Option<String>,
+    pub explanation: Option<String>,
     pub entity_type: String,
     pub format: MetricFormat,
     pub unit: Option<String>,

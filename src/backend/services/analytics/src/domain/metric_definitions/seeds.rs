@@ -100,13 +100,14 @@ async fn upsert_metric(db: &DatabaseConnection, metric: &MetricSeed) -> Result<(
     db.execute(Statement::from_sql_and_values(
         db.get_database_backend(),
         "INSERT INTO metric_definitions \
-            (id, tenant_id, metric_key, label, description, unit, format, direction, entity_type, \
+            (id, tenant_id, metric_key, label, description, explanation, unit, format, direction, entity_type, \
              computation_type, scale, distribution_statistic, gauge_method, peer_cohort_key, \
              origin, definition_version, is_enabled) \
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'builtin', 1, TRUE) \
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'builtin', 1, TRUE) \
          ON DUPLICATE KEY UPDATE \
             label = VALUES(label), \
             description = VALUES(description), \
+            explanation = VALUES(explanation), \
             unit = VALUES(unit), \
             format = VALUES(format), \
             direction = VALUES(direction), \
@@ -124,6 +125,7 @@ async fn upsert_metric(db: &DatabaseConnection, metric: &MetricSeed) -> Result<(
             Value::from(metric.metric_key),
             Value::from(metric.label),
             nullable_str(metric.description),
+            nullable_str(metric.explanation),
             nullable_str(metric.unit),
             Value::from(metric.format),
             Value::from(metric.direction),
