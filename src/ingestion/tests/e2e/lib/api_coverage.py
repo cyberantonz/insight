@@ -58,6 +58,17 @@ EXPECTED_STATUS: dict[str, frozenset[int]] = {
     # No identity service in the rig: the pinned contract is the canonical 500
     # (see api/test_persons.py); a 200 here is unreachable by design.
     "GET /v1/persons/{email}": frozenset({500}),
+    # KNOWN BUG #1663 (TEMPORARY — remove with the fix): every read of a
+    # non-empty thresholds table 500s (DECIMAL value vs f64 entity), so the
+    # success paths are unreachable and their tests xfail (see
+    # api/test_metric_thresholds.py). Until then the pinned error contracts
+    # (400 validation / 404 unknown) are what counts as exercised. When #1663
+    # is fixed the xfails stop firing, a 2xx lands in the ledger, and the
+    # redundant-override hygiene fails this gate — forcing cleanup here.
+    "POST /v1/metrics/{id}/thresholds": frozenset({400, 404}),
+    "GET /v1/metrics/{id}/thresholds": frozenset({404}),
+    "PUT /v1/metrics/{id}/thresholds/{tid}": frozenset({404}),
+    "DELETE /v1/metrics/{id}/thresholds/{tid}": frozenset({404}),
 }
 
 

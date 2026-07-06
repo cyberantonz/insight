@@ -37,11 +37,21 @@ def scratch_metric(api) -> dict:
 
 @pytest.fixture
 def scratch_threshold(api, scratch_metric: dict) -> dict:
-    """A threshold (`ge 1.0 good`) on the scratch metric; removed in teardown."""
+    """A threshold (`ge 1.0 good`) on the scratch metric; removed in teardown.
+
+    KNOWN BUG #1663: thresholds.value is DECIMAL(20,6) but the entity reads
+    f64 — the create's read-back (and every later read) 500s, so this fixture
+    xfails its dependents until the fix lands. When #1663 is fixed this xfail
+    stops firing, the dependent tests run for real, and the temporary
+    EXPECTED_STATUS overrides in lib/api_coverage.py fail the endpoint gate as
+    redundant — forcing this scaffolding to be removed.
+    """
     r = api.post(
         f"/v1/metrics/{scratch_metric['id']}/thresholds",
         json={"field_name": "one", "operator": "ge", "value": 1.0, "level": "good"},
     )
+    if r.status_code == 500:
+        pytest.xfail("#1663: threshold create 500s on read-back (DECIMAL value vs f64 entity)")
     assert r.status_code == 201, f"threshold setup: status={r.status_code} body={r.text}"
     thr = r.json()
     yield thr

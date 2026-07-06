@@ -24,11 +24,18 @@ untouched.
 
 Status codes: each operation's success code is exercised — and the endpoint
 gate enforces that (an op only ever seen erroring fails; EXPECTED_STATUS in
-lib/api_coverage.py overrides the persons op, whose rig contract is a 500).
+lib/api_coverage.py overrides ops whose reachable contract is not a 2xx).
 Reachable error codes are pinned by explicit tests: 400 validation, 404
-unknown/soft-deleted, 409 duplicate admin create, 500 identity-unconfigured.
-The remaining declared codes (401/403/429 and generic 500s) are unreachable by
-design here — auth is disabled and nothing rate-limits.
+unknown/soft-deleted, 500 identity-unconfigured. The remaining declared codes
+(401/403/429) are unreachable by design here — auth is disabled and nothing
+rate-limits.
+
+KNOWN BUGS pinned by strict xfails (each forces cleanup when fixed):
+  #1663 — legacy threshold reads 500 once a row exists (DECIMAL value vs f64
+          entity): success-path threshold cases xfail; temporary
+          EXPECTED_STATUS overrides accept the pinned 400/404 contracts.
+  #1664 — duplicate admin create answers 500 (unmapped UNIQUE violation)
+          instead of the declared 409: test_create_409_duplicate xfails.
 
 Authz notes pinned by the tests: the rig runs auth-disabled with
 `X-Insight-Tenant-Id: TEST_TENANT_ID` on every request; the admin gate

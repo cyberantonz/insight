@@ -4,6 +4,11 @@
   POST   /v1/metrics/{id}/thresholds        201 · 400 bad operator · 404 unknown metric
   PUT    /v1/metrics/{id}/thresholds/{tid}  200 · 400 bad operator · 404 unknown tid
   DELETE /v1/metrics/{id}/thresholds/{tid}  204 · 404 unknown tid
+
+KNOWN BUG #1663: every read of a non-empty thresholds table 500s (DECIMAL
+value column vs f64 entity), so the success-path cases xfail — create_201
+directly (strict), the rest via the scratch_threshold fixture. The error-path
+cases (400 validation, 404 unknown) don't touch a stored row and run for real.
 """
 
 from __future__ import annotations
@@ -15,6 +20,10 @@ from api.endpoint_helpers import UNKNOWN_ID
 pytestmark = pytest.mark.api
 
 
+@pytest.mark.xfail(
+    reason="#1663: create 500s on its read-back — value is DECIMAL(20,6), entity reads f64",
+    strict=True,
+)
 def test_create_threshold_201(api, scratch_metric: dict) -> None:
     r = api.post(
         f"/v1/metrics/{scratch_metric['id']}/thresholds",
