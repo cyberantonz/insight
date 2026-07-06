@@ -6,7 +6,7 @@ use crate::domain::metric_definitions::{ExecutableMetric, MetricDefinition};
 
 use super::compiler::{
     BreakdownQueryRow, PeerQueryRow, PeriodQueryRow, TimeseriesQueryRow, UNKNOWN_DIMENSION_LABEL,
-    UNKNOWN_DIMENSION_VALUE,
+    UNKNOWN_DIMENSION_VALUE, dimension_aliases,
 };
 use super::definition::Bucket;
 use super::dto::{
@@ -268,8 +268,7 @@ fn row_dimensions(
         .iter()
         .enumerate()
         .map(|(idx, key)| {
-            let value_alias = format!("dim_{idx}_value");
-            let label_alias = format!("dim_{idx}_label");
+            let (value_alias, label_alias) = dimension_aliases(idx);
             let value_field = extra.get(&value_alias).ok_or_else(|| {
                 tracing::error!(alias = %value_alias, "metric result row missing dimension alias");
                 CanonicalError::internal("metric result shape mismatch").create()

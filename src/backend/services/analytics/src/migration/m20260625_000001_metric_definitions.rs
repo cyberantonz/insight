@@ -174,7 +174,7 @@ mod tests {
     fn schema_error_check_lists_match_error_code_enum() {
         let expected = ALL_METRIC_SCHEMA_ERROR_CODES
             .iter()
-            .map(|code| format!("'{}'", code.as_db_str()))
+            .map(|code| format!("'{}'", code.as_db()))
             .collect::<Vec<_>>()
             .join(",");
         let expected_clause = format!("schema_error_code IN ({expected})");

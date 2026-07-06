@@ -4,8 +4,8 @@ use clickhouse::Row;
 use sea_orm::DatabaseConnection;
 use serde::Deserialize;
 
-use crate::domain::metric_definitions::definition::{CohortSource, ObservationSource};
-use crate::domain::metric_definitions::error_code::MetricSchemaErrorCode;
+use crate::domain::metric_definitions::definition::{CohortSource, ObservationSource, SourceKind};
+use crate::domain::metric_definitions::error_code::{MetricSchemaErrorCode, SchemaStatus};
 use crate::domain::metric_definitions::repository::{
     MetricDefinitionValidationSpec, all_managed_sources, managed_definition_validation_specs,
     update_definition_status, update_definitions_for_source_status, update_source_status,
@@ -69,10 +69,14 @@ impl MetricDefinitionValidator {
     }
 
     async fn validate_source(&self, source_kind: &str, source_ref: &str) -> ProbeOutcome {
-        if source_kind != "managed_observation" {
-            return ProbeOutcome::Definitive(ValidationState::error(
-                MetricSchemaErrorCode::Unknown,
-            ));
+        match SourceKind::from_db(source_kind) {
+            Some(SourceKind::ManagedObservation) => {}
+            Some(SourceKind::CustomObservationSql) => return ProbeOutcome::Inconclusive,
+            None => {
+                return ProbeOutcome::Definitive(ValidationState::error(
+                    MetricSchemaErrorCode::Unknown,
+                ));
+            }
         }
 
         let Some(source) = ObservationSource::from_ref(source_ref) else {
@@ -512,11 +516,11 @@ impl ValidationState {
         matches!(self, Self::Ok)
     }
 
-    fn as_db(self) -> (&'static str, Option<&'static str>) {
+    fn as_db(self) -> (SchemaStatus, Option<MetricSchemaErrorCode>) {
         match self {
-            Self::Ok => ("ok", None),
-            Self::Error(code) => ("error", Some(code.as_db_str())),
-            Self::Unchecked => ("unchecked", None),
+            Self::Ok => (SchemaStatus::Ok, None),
+            Self::Error(code) => (SchemaStatus::Error, Some(code)),
+            Self::Unchecked => (SchemaStatus::Unchecked, None),
         }
     }
 }

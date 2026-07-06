@@ -393,12 +393,15 @@ fn cohort_table(source: CohortSource) -> &'static str {
     }
 }
 
+pub(crate) fn dimension_aliases(idx: usize) -> (String, String) {
+    (format!("dim_{idx}_value"), format!("dim_{idx}_label"))
+}
+
 fn dimension_select_group(dimensions: &[String]) -> (String, String) {
     let mut select = String::new();
     let mut groups = Vec::with_capacity(dimensions.len() * 2);
     for (idx, dimension) in dimensions.iter().enumerate() {
-        let value_alias = format!("dim_{idx}_value");
-        let label_alias = format!("dim_{idx}_label");
+        let (value_alias, label_alias) = dimension_aliases(idx);
         let _ = write!(
             select,
             ", {value} AS {value_alias}, {label} AS {label_alias}",

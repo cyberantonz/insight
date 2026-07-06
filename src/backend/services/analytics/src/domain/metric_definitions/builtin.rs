@@ -1,19 +1,7 @@
 use crate::domain::metric_definitions::definition::{
     MetricComputation, MetricDirection, MetricFormat, MetricInputRole, ObservationSource,
+    SourceKind,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceKind {
-    ManagedObservation,
-}
-
-impl SourceKind {
-    pub fn as_db(self) -> &'static str {
-        match self {
-            Self::ManagedObservation => "managed_observation",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeasureValueType {

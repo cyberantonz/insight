@@ -5,11 +5,13 @@ use toolkit_canonical_errors::CanonicalError;
 use uuid::Uuid;
 
 use crate::api::error::MetricError;
+use crate::domain::metric_definitions::error_code::{MetricSchemaErrorCode, SchemaStatus};
+
 use crate::domain::metric_definitions::definition::{
     CountDistinctMetricDefinition, CountMetricDefinition, DerivedMetricDefinition,
     DistributionMetricDefinition, DistributionStatistic, GaugeMethod, GaugeMetricDefinition,
     MetricBase, MetricComputation, MetricDefinition, MetricDirection, MetricFormat, MetricInput,
-    MetricInputRole, ObservationSource, RatioMetricDefinition, SumMetricDefinition,
+    MetricInputRole, ObservationSource, RatioMetricDefinition, SourceKind, SumMetricDefinition,
 };
 
 #[derive(Debug, FromQueryResult)]
@@ -269,10 +271,15 @@ fn classify_inputs(rows: Vec<InputRow>) -> HashMap<Uuid, ClassifiedInputs> {
         // Corrupt config must stay loud regardless of row order: it wins
         // over Unavailable, which wins over Available.
         let role = MetricInputRole::from_db(&row.input_role);
+        let kind = SourceKind::from_db(&row.source_kind);
         let observation_source = ObservationSource::from_ref(&row.source_ref);
-        let parsed = match (role, observation_source) {
-            (Some(role), Some(observation_source)) if row.source_kind == "managed_observation" => {
+        let parsed = match (role, kind, observation_source) {
+            (Some(role), Some(SourceKind::ManagedObservation), Some(observation_source)) => {
                 Some((role, observation_source))
+            }
+            (Some(_), Some(SourceKind::CustomObservationSql), _) => {
+                *entry = ClassifiedInputs::Unavailable;
+                continue;
             }
             _ => None,
         };
@@ -292,8 +299,8 @@ fn classify_inputs(rows: Vec<InputRow>) -> HashMap<Uuid, ClassifiedInputs> {
 
         if !row.measure_enabled
             || !row.source_enabled
-            || row.measure_schema_status == "error"
-            || row.source_schema_status == "error"
+            || schema_status_blocks(&row.measure_schema_status)
+            || schema_status_blocks(&row.source_schema_status)
         {
             *entry = ClassifiedInputs::Unavailable;
             continue;
@@ -309,6 +316,13 @@ fn classify_inputs(rows: Vec<InputRow>) -> HashMap<Uuid, ClassifiedInputs> {
         }
     }
     out
+}
+
+fn schema_status_blocks(status: &str) -> bool {
+    !matches!(
+        SchemaStatus::from_db(status),
+        Some(SchemaStatus::Ok | SchemaStatus::Unchecked)
+    )
 }
 
 fn group_by_key(rows: Vec<DefinitionRow>) -> BTreeMap<String, Vec<DefinitionRow>> {
@@ -353,7 +367,10 @@ fn select_available_row(
             inputs.get(&row.definition_id),
             Some(ClassifiedInputs::Unavailable)
         );
-        if row.definition_enabled && row.definition_schema_status != "error" && inputs_available {
+        if row.definition_enabled
+            && !schema_status_blocks(&row.definition_schema_status)
+            && inputs_available
+        {
             return Ok(Some(row));
         }
     }
@@ -599,8 +616,8 @@ pub async fn all_managed_sources(
 pub async fn update_source_status(
     db: &DatabaseConnection,
     source_id: Uuid,
-    status: &str,
-    error_code: Option<&str>,
+    status: SchemaStatus,
+    error_code: Option<MetricSchemaErrorCode>,
 ) -> Result<(), sea_orm::DbErr> {
     db.execute(Statement::from_sql_and_values(
         db.get_database_backend(),
@@ -611,9 +628,9 @@ pub async fn update_source_status(
              updated_at = updated_at \
          WHERE id = ?",
         [
-            Value::from(status),
+            Value::from(status.as_db()),
             match error_code {
-                Some(code) => Value::from(code),
+                Some(code) => Value::from(code.as_db()),
                 None => Value::String(None),
             },
             Value::Bytes(Some(Box::new(source_id.as_bytes().to_vec()))),
@@ -626,8 +643,8 @@ pub async fn update_source_status(
 pub async fn update_definitions_for_source_status(
     db: &DatabaseConnection,
     source_id: Uuid,
-    status: &str,
-    error_code: Option<&str>,
+    status: SchemaStatus,
+    error_code: Option<MetricSchemaErrorCode>,
 ) -> Result<(), sea_orm::DbErr> {
     db.execute(Statement::from_sql_and_values(
         db.get_database_backend(),
@@ -643,9 +660,9 @@ pub async fn update_definitions_for_source_status(
              WHERE m.source_id = ? \
          )",
         [
-            Value::from(status),
+            Value::from(status.as_db()),
             match error_code {
-                Some(code) => Value::from(code),
+                Some(code) => Value::from(code.as_db()),
                 None => Value::String(None),
             },
             Value::Bytes(Some(Box::new(source_id.as_bytes().to_vec()))),
@@ -658,8 +675,8 @@ pub async fn update_definitions_for_source_status(
 pub async fn update_definition_status(
     db: &DatabaseConnection,
     definition_id: Uuid,
-    status: &str,
-    error_code: Option<&str>,
+    status: SchemaStatus,
+    error_code: Option<MetricSchemaErrorCode>,
 ) -> Result<(), sea_orm::DbErr> {
     db.execute(Statement::from_sql_and_values(
         db.get_database_backend(),
@@ -670,9 +687,9 @@ pub async fn update_definition_status(
              updated_at = updated_at \
          WHERE id = ?",
         [
-            Value::from(status),
+            Value::from(status.as_db()),
             match error_code {
-                Some(code) => Value::from(code),
+                Some(code) => Value::from(code.as_db()),
                 None => Value::String(None),
             },
             uuid_value(definition_id),
@@ -908,6 +925,18 @@ mod tests {
         assert!(matches!(
             classified.get(&id),
             Some(ClassifiedInputs::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn classify_marks_custom_sql_source_unavailable_not_corrupt() {
+        let id = Uuid::now_v7();
+        let mut row = input_row(id, "value", true, "ok");
+        row.source_kind = "custom_observation_sql".to_owned();
+        let classified = classify_inputs(vec![row]);
+        assert!(matches!(
+            classified.get(&id),
+            Some(ClassifiedInputs::Unavailable)
         ));
     }
 

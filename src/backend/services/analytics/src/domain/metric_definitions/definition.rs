@@ -62,6 +62,29 @@ pub enum GaugeMethod {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    ManagedObservation,
+    CustomObservationSql,
+}
+
+impl SourceKind {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::ManagedObservation => "managed_observation",
+            Self::CustomObservationSql => "custom_observation_sql",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "managed_observation" => Some(Self::ManagedObservation),
+            "custom_observation_sql" => Some(Self::CustomObservationSql),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObservationSource {
     AiMetricObservations,
 }
@@ -405,6 +428,12 @@ mod tests {
                 ObservationSource::from_ref(source.source_ref()),
                 Some(source)
             );
+        }
+        for kind in [
+            SourceKind::ManagedObservation,
+            SourceKind::CustomObservationSql,
+        ] {
+            assert_eq!(SourceKind::from_db(kind.as_db()), Some(kind));
         }
     }
 }
