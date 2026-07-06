@@ -220,6 +220,12 @@ impl ExecutableMetric {
 }
 
 impl ObservationSource {
+    pub fn source_ref(self) -> &'static str {
+        match self {
+            Self::AiMetricObservations => "ai_metric_observations",
+        }
+    }
+
     pub fn from_ref(value: &str) -> Option<Self> {
         match value {
             "ai_metric_observations" => Some(Self::AiMetricObservations),
@@ -243,6 +249,15 @@ impl CohortSource {
 }
 
 impl MetricFormat {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Integer => "integer",
+            Self::Decimal => "decimal",
+            Self::Currency => "currency",
+            Self::Percent => "percent",
+        }
+    }
+
     pub fn from_db(value: &str) -> Option<Self> {
         match value {
             "integer" => Some(Self::Integer),
@@ -255,6 +270,14 @@ impl MetricFormat {
 }
 
 impl MetricDirection {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::HigherIsBetter => "higher_is_better",
+            Self::LowerIsBetter => "lower_is_better",
+            Self::Neutral => "neutral",
+        }
+    }
+
     pub fn from_db(value: &str) -> Option<Self> {
         match value {
             "higher_is_better" => Some(Self::HigherIsBetter),
@@ -293,6 +316,18 @@ impl MetricComputation {
 }
 
 impl MetricInputRole {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Value => "value",
+            Self::Event => "event",
+            Self::Numerator => "numerator",
+            Self::Denominator => "denominator",
+            Self::Sample => "sample",
+            Self::Snapshot => "snapshot",
+            Self::Dependency => "dependency",
+        }
+    }
+
     pub fn from_db(value: &str) -> Option<Self> {
         match value {
             "value" => Some(Self::Value),
@@ -329,6 +364,47 @@ impl GaugeMethod {
             "max" => Some(Self::Max),
             "avg" => Some(Self::Avg),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_strings_round_trip() {
+        for format in [
+            MetricFormat::Integer,
+            MetricFormat::Decimal,
+            MetricFormat::Currency,
+            MetricFormat::Percent,
+        ] {
+            assert_eq!(MetricFormat::from_db(format.as_db()), Some(format));
+        }
+        for direction in [
+            MetricDirection::HigherIsBetter,
+            MetricDirection::LowerIsBetter,
+            MetricDirection::Neutral,
+        ] {
+            assert_eq!(MetricDirection::from_db(direction.as_db()), Some(direction));
+        }
+        for role in [
+            MetricInputRole::Value,
+            MetricInputRole::Event,
+            MetricInputRole::Numerator,
+            MetricInputRole::Denominator,
+            MetricInputRole::Sample,
+            MetricInputRole::Snapshot,
+            MetricInputRole::Dependency,
+        ] {
+            assert_eq!(MetricInputRole::from_db(role.as_db()), Some(role));
+        }
+        for source in [ObservationSource::AiMetricObservations] {
+            assert_eq!(
+                ObservationSource::from_ref(source.source_ref()),
+                Some(source)
+            );
         }
     }
 }

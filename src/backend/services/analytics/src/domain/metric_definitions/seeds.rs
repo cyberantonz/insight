@@ -2,7 +2,7 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, Value};
 use uuid::Uuid;
 
 use crate::domain::metric_definitions::builtin::{
-    BUILTIN_METRICS, BUILTIN_SOURCES, BuiltinSource, InputSeed, MetricSeed,
+    BUILTIN_METRICS, BUILTIN_SOURCES, BuiltinSource, CohortKey, InputSeed, MetricSeed,
 };
 
 pub async fn reconcile_builtin_definitions(db: &DatabaseConnection) -> Result<(), DbErr> {
@@ -42,7 +42,7 @@ async fn reconcile_source(
                 uuid_value(Uuid::now_v7()),
                 uuid_value(source_id),
                 Value::from(measure.measure_key),
-                Value::from(measure.value_type),
+                Value::from(measure.value_type.as_db()),
             ],
         ))
         .await?;
@@ -88,8 +88,8 @@ async fn upsert_source(
         [
             uuid_value(Uuid::now_v7()),
             Value::from(builtin_source.source.key),
-            Value::from(builtin_source.source.kind),
-            Value::from(builtin_source.source.ref_name),
+            Value::from(builtin_source.source.kind.as_db()),
+            Value::from(builtin_source.source.source_ref.source_ref()),
         ],
     ))
     .await?;
@@ -127,17 +127,17 @@ async fn upsert_metric(db: &DatabaseConnection, metric: &MetricSeed) -> Result<(
             nullable_str(metric.description),
             nullable_str(metric.explanation),
             nullable_str(metric.unit),
-            Value::from(metric.format),
-            Value::from(metric.direction),
-            Value::from(metric.entity_type),
-            Value::from(metric.computation_type),
-            match metric.scale {
+            Value::from(metric.format.as_db()),
+            Value::from(metric.direction.as_db()),
+            Value::from(metric.entity_type.as_db()),
+            Value::from(metric.computation.computation().as_db()),
+            match metric.computation.scale() {
                 Some(scale) => Value::from(scale),
                 None => Value::Double(None),
             },
-            nullable_str(metric.distribution_statistic),
-            nullable_str(metric.gauge_method),
-            nullable_str(metric.peer_cohort_key),
+            Value::String(None),
+            Value::String(None),
+            nullable_str(metric.peer_cohort_key.map(CohortKey::as_db)),
         ],
     ))
     .await?;
@@ -167,7 +167,7 @@ async fn replace_inputs(
             [
                 uuid_value(Uuid::now_v7()),
                 uuid_value(metric_id),
-                Value::from(input.input_role),
+                Value::from(input.input_role.as_db()),
                 uuid_value(measure_id),
                 Value::from(order_value(idx)),
             ],

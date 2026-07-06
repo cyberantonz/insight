@@ -1,12 +1,90 @@
+use crate::domain::metric_definitions::definition::{
+    MetricComputation, MetricDirection, MetricFormat, MetricInputRole, ObservationSource,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    ManagedObservation,
+}
+
+impl SourceKind {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::ManagedObservation => "managed_observation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasureValueType {
+    Number,
+}
+
+impl MeasureValueType {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Number => "number",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityType {
+    Person,
+}
+
+impl EntityType {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CohortKey {
+    OrgUnit,
+}
+
+impl CohortKey {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::OrgUnit => "org_unit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SeedComputation {
+    Sum,
+    Ratio { scale: f64 },
+}
+
+impl SeedComputation {
+    pub fn computation(self) -> MetricComputation {
+        match self {
+            Self::Sum => MetricComputation::Sum,
+            Self::Ratio { .. } => MetricComputation::Ratio,
+        }
+    }
+
+    pub fn scale(self) -> Option<f64> {
+        match self {
+            Self::Sum => None,
+            Self::Ratio { scale } => Some(scale),
+        }
+    }
+}
+
 pub struct SourceSeed {
     pub key: &'static str,
-    pub kind: &'static str,
-    pub ref_name: &'static str,
+    pub kind: SourceKind,
+    pub source_ref: ObservationSource,
 }
 
 pub struct MeasureSeed {
     pub measure_key: &'static str,
-    pub value_type: &'static str,
+    pub value_type: MeasureValueType,
 }
 
 pub struct DimensionSeed {
@@ -27,69 +105,66 @@ pub struct MetricSeed {
     pub description: Option<&'static str>,
     pub explanation: Option<&'static str>,
     pub unit: Option<&'static str>,
-    pub format: &'static str,
-    pub direction: &'static str,
-    pub entity_type: &'static str,
-    pub computation_type: &'static str,
-    pub scale: Option<f64>,
-    pub distribution_statistic: Option<&'static str>,
-    pub gauge_method: Option<&'static str>,
-    pub peer_cohort_key: Option<&'static str>,
+    pub format: MetricFormat,
+    pub direction: MetricDirection,
+    pub entity_type: EntityType,
+    pub computation: SeedComputation,
+    pub peer_cohort_key: Option<CohortKey>,
     pub inputs: &'static [InputSeed],
     pub dimensions: &'static [&'static str],
 }
 
 pub struct InputSeed {
-    pub input_role: &'static str,
+    pub input_role: MetricInputRole,
     pub measure_key: &'static str,
 }
 
 pub const BUILTIN_SOURCES: &[BuiltinSource] = &[BuiltinSource {
     source: SourceSeed {
         key: "ai_usage",
-        kind: "managed_observation",
-        ref_name: "ai_metric_observations",
+        kind: SourceKind::ManagedObservation,
+        source_ref: ObservationSource::AiMetricObservations,
     },
     measures: &[
         MeasureSeed {
             measure_key: "accepted_lines",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "removed_lines",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "active_day",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "cost_usd",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "accepted_edit_actions",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "tool_use_offered",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "assistant_messages",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "assistant_actions",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "dev_conversations",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
         MeasureSeed {
             measure_key: "chat_assistant_conversations",
-            value_type: "number",
+            value_type: MeasureValueType::Number,
         },
     ],
     dimensions: &[
@@ -112,16 +187,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         description: Some("Accepted added coding output"),
         explanation: Some("Accepted AI-generated added lines across coding AI tools."),
         unit: Some("lines"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "accepted_lines",
         }],
         dimensions: &["tool"],
@@ -133,16 +205,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         description: Some("Accepted deleted coding output"),
         explanation: Some("Accepted AI-generated removed lines across coding AI tools."),
         unit: Some("lines"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "removed_lines",
         }],
         dimensions: &["tool"],
@@ -156,16 +225,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
             "Distinct days with person-attributed AI activity across dev and assistant tools.",
         ),
         unit: Some("days"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "active_day",
         }],
         dimensions: &[],
@@ -179,16 +245,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
             "Person-attributed AI spend across dev and assistant tools, where the connector reports cost.",
         ),
         unit: None,
-        format: "currency",
-        direction: "lower_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Currency,
+        direction: MetricDirection::LowerIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "cost_usd",
         }],
         dimensions: &["tool"],
@@ -200,16 +263,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         description: Some("Accepted tool or edit suggestions"),
         explanation: Some("Accepted AI edit or tool suggestions across supported coding AI tools."),
         unit: Some("actions"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "accepted_edit_actions",
         }],
         dimensions: &["tool"],
@@ -221,21 +281,18 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         description: Some("Accepted divided by offered AI edits"),
         explanation: Some("Accepted AI edit or tool suggestions divided by offered suggestions."),
         unit: Some("percent"),
-        format: "percent",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "ratio",
-        scale: Some(100.0),
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Percent,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Ratio { scale: 100.0 },
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[
             InputSeed {
-                input_role: "numerator",
+                input_role: MetricInputRole::Numerator,
                 measure_key: "accepted_edit_actions",
             },
             InputSeed {
-                input_role: "denominator",
+                input_role: MetricInputRole::Denominator,
                 measure_key: "tool_use_offered",
             },
         ],
@@ -250,16 +307,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
             "Person-attributed assistant messages from supported AI assistant tools.",
         ),
         unit: Some("messages"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "assistant_messages",
         }],
         dimensions: &["tool", "surface"],
@@ -271,16 +325,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         description: Some("Assistant actions"),
         explanation: Some("Person-attributed assistant actions from supported AI assistant tools."),
         unit: Some("actions"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "assistant_actions",
         }],
         dimensions: &["tool", "surface"],
@@ -294,16 +345,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
             "Person-attributed coding conversations from dev tools that report them.",
         ),
         unit: Some("conversations"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "dev_conversations",
         }],
         dimensions: &["tool"],
@@ -317,16 +365,13 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
             "Person-attributed chat assistant conversations from supported AI chat tools.",
         ),
         unit: Some("conversations"),
-        format: "integer",
-        direction: "higher_is_better",
-        entity_type: "person",
-        computation_type: "sum",
-        scale: None,
-        distribution_statistic: None,
-        gauge_method: None,
-        peer_cohort_key: Some("org_unit"),
+        format: MetricFormat::Integer,
+        direction: MetricDirection::HigherIsBetter,
+        entity_type: EntityType::Person,
+        computation: SeedComputation::Sum,
+        peer_cohort_key: Some(CohortKey::OrgUnit),
         inputs: &[InputSeed {
-            input_role: "value",
+            input_role: MetricInputRole::Value,
             measure_key: "chat_assistant_conversations",
         }],
         dimensions: &["tool", "surface"],
@@ -449,55 +494,22 @@ mod tests {
     }
 
     #[test]
-    fn computation_fields_satisfy_db_check() {
-        for metric in BUILTIN_METRICS {
-            match metric.computation_type {
-                "sum" | "count" | "count_distinct" | "derived" => {
-                    assert!(metric.scale.is_none(), "{}", metric.metric_key);
-                    assert!(
-                        metric.distribution_statistic.is_none(),
-                        "{}",
-                        metric.metric_key
-                    );
-                    assert!(metric.gauge_method.is_none(), "{}", metric.metric_key);
-                }
-                "ratio" => {
-                    assert!(metric.scale.is_some(), "{}", metric.metric_key);
-                    assert!(
-                        metric.distribution_statistic.is_none(),
-                        "{}",
-                        metric.metric_key
-                    );
-                    assert!(metric.gauge_method.is_none(), "{}", metric.metric_key);
-                }
-                "distribution" => {
-                    assert!(
-                        metric.distribution_statistic.is_some(),
-                        "{}",
-                        metric.metric_key
-                    );
-                }
-                "gauge" => {
-                    assert!(metric.gauge_method.is_some(), "{}", metric.metric_key);
-                }
-                other => panic!("unknown computation {other} for {}", metric.metric_key),
-            }
-        }
-    }
-
-    #[test]
     fn ratio_metrics_have_numerator_and_denominator_roles() {
         for metric in BUILTIN_METRICS {
-            if metric.computation_type != "ratio" {
+            let SeedComputation::Ratio { .. } = metric.computation else {
                 continue;
-            }
-            let roles = metric
-                .inputs
-                .iter()
-                .map(|input| input.input_role)
-                .collect::<BTreeSet<_>>();
-            assert!(roles.contains("numerator"), "{}", metric.metric_key);
-            assert!(roles.contains("denominator"), "{}", metric.metric_key);
+            };
+            let has_role = |role| metric.inputs.iter().any(|input| input.input_role == role);
+            assert!(
+                has_role(MetricInputRole::Numerator),
+                "{}",
+                metric.metric_key
+            );
+            assert!(
+                has_role(MetricInputRole::Denominator),
+                "{}",
+                metric.metric_key
+            );
         }
     }
 }
