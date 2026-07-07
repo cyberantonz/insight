@@ -10,11 +10,11 @@
 --
 -- Idempotent: re-runs match zero rows.
 --
--- Historical STAGING rows keep '' labels (staging tables may not exist when
--- this runs, and the incremental class models never re-read old staging
--- rows). A manual class rebuild must therefore full-refresh the staging
--- models together with the class tables so labels re-derive from the
--- staging model literals.
+-- Historical STAGING rows get the same repair from the guarded step in
+-- apply-ch-migrations.sh (staging tables may not exist on fresh installs,
+-- so their repair cannot live in this unconditional channel). Class rows
+-- are repaired here directly so instances whose connectors never trigger a
+-- full re-materialization still converge.
 
 ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS tool_label String DEFAULT '';
 

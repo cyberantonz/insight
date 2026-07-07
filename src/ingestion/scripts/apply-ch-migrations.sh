@@ -51,6 +51,54 @@ for migration in "$SCRIPT_DIR/migrations"/*.sql; do
   run_ch < "$migration"
 done
 
+echo "=== Repairing class-contract labels on AI staging history ==="
+# Staging rows ingested before the label columns existed read them as ''
+# (String DEFAULT materialized by append_new_columns), and incremental
+# models never re-read old rows. Labels are DECLARED CONSTANTS in the
+# staging models, so writing the same constants here is byte-identical to
+# what a full re-materialization would produce — any later full refresh
+# independently converges to the same values and these updates become
+# permanent no-ops. Data-bearing contract columns are NOT repairable this
+# way; those go through the ADR-0015 major-bump full refresh instead.
+# Guarded per table: staging tables do not exist before the connector's
+# first dbt run. Idempotent: re-runs match zero rows.
+repair_staging_tool_label() {
+  local table="$1" label="$2"
+  ch_table_exists staging "${table}" || return 0
+  echo "  staging.${table}"
+  run_ch <<SQL
+ALTER TABLE staging.${table} ADD COLUMN IF NOT EXISTS tool_label String DEFAULT '';
+ALTER TABLE staging.${table} UPDATE tool_label = '${label}' WHERE tool_label = '' SETTINGS mutations_sync = 2;
+SQL
+}
+
+repair_staging_surface_label() {
+  local table="$1"
+  ch_table_exists staging "${table}" || return 0
+  run_ch <<SQL
+ALTER TABLE staging.${table} ADD COLUMN IF NOT EXISTS surface_label String DEFAULT '';
+ALTER TABLE staging.${table} UPDATE surface_label = multiIf(
+    surface = 'chat', 'Chat',
+    surface = 'excel', 'Excel',
+    surface = 'powerpoint', 'PowerPoint',
+    surface = 'cowork', 'Cowork',
+    surface = 'cross', 'Cross',
+    surface
+) WHERE surface_label = '' SETTINGS mutations_sync = 2;
+SQL
+}
+
+repair_staging_tool_label cursor__ai_dev_usage "Cursor"
+repair_staging_tool_label claude_enterprise__ai_dev_usage "Claude Code"
+repair_staging_tool_label claude_team__ai_dev_usage "Claude Code"
+repair_staging_tool_label claude_admin__ai_dev_usage "Claude Code"
+repair_staging_tool_label copilot__ai_dev_usage "GitHub Copilot"
+repair_staging_tool_label chatgpt_team__ai_dev_usage "Codex"
+repair_staging_tool_label claude_enterprise__ai_assistant_usage "Claude"
+repair_staging_tool_label chatgpt_team__ai_assistant_usage "ChatGPT"
+repair_staging_surface_label claude_enterprise__ai_assistant_usage
+repair_staging_surface_label chatgpt_team__ai_assistant_usage
+
 echo "=== Building gold models (dbt run --select tag:gold) ==="
 # Gold views are dbt-owned but must exist at DEPLOY time, not first-sync
 # time: the analytics service marks metric definitions schema-error while

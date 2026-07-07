@@ -407,6 +407,13 @@ The metric family reads data no managed source covers.
 - Measure filter predicates (`where=` on shape macros) may reference only
   class-contract dimension columns and their normalized values — never vendor
   columns, tool names, or label text.
+- Adding a class-contract column to existing staging models needs a history
+  backfill plan: columns derived from source data require re-materialization
+  — major-bump every affected connector (ADR-0015 dispatches a scoped
+  one-shot full refresh; CDK connectors need an explicit invocation until
+  the toolkit closes its semver-storage gap). Declared-constant columns
+  (labels) are repaired in place by the migrate hook; any rebuild
+  independently converges to the same values.
 - No new `metric_catalog` seed migrations and no new ad-hoc `insight.*` views
   for metrics.
 - Do not add runtime formula JSON until generation exists.
