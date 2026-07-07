@@ -294,6 +294,14 @@ entity ids); period, timeseries, and breakdown views expose per-entity values.
 Entity-level scoping (self, reports, role-based) is deferred to the real
 authorization system; this endpoint must adopt it when it lands.
 
+Warehouse tenant isolation is not implemented platform-wide: compiled queries
+do not filter on the warehouse `tenant_id` column, matching the rest of the
+platform's single-tenant posture. The control-plane tenant id has no defined
+mapping to the warehouse `tenant_id` strings stamped at ingestion; defining
+that mapping and adding the predicate (one place: the compiler's shared WHERE
+clause) is the multi-tenant unlock. The observation and cohort contracts keep
+the column so that change needs no contract migration.
+
 Schema validation checks:
 
 - managed source refs map to backend source enums.

@@ -31,8 +31,7 @@ pub async fn query_metric_results(
     Json(req): Json<MetricResultsRequest>,
 ) -> Result<Json<MetricResultsResponse>, CanonicalError> {
     let req = validate_request(&state.db, ctx.subject_tenant_id(), req).await?;
-    let tenant_id = warehouse_tenant_id(&state, &ctx);
-    let tasks = compile_tasks(&req, &tenant_id);
+    let tasks = compile_tasks(&req);
     let results = stream::iter(tasks)
         .map(|task| execute_task(&state, &req, task))
         .buffer_unordered(QUERY_CONCURRENCY)
@@ -67,17 +66,6 @@ pub async fn query_metric_results(
     Ok(Json(response))
 }
 
-fn warehouse_tenant_id(state: &AppState, ctx: &SecurityContext) -> String {
-    state
-        .config
-        .metric_results
-        .single_tenant_warehouse_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|tenant_id| !tenant_id.is_empty())
-        .map_or_else(|| ctx.subject_tenant_id().to_string(), ToOwned::to_owned)
-}
-
 struct MetricViewTask {
     metric_index: usize,
     view_index: usize,
@@ -92,7 +80,7 @@ struct MetricViewTaskResult {
     view: MetricResultViewDto,
 }
 
-fn compile_tasks(req: &ValidatedMetricResultsRequest, tenant_id: &str) -> Vec<MetricViewTask> {
+fn compile_tasks(req: &ValidatedMetricResultsRequest) -> Vec<MetricViewTask> {
     req.metrics
         .iter()
         .enumerate()
@@ -106,7 +94,7 @@ fn compile_tasks(req: &ValidatedMetricResultsRequest, tenant_id: &str) -> Vec<Me
                     view_index,
                     def: metric.def.clone(),
                     view: view.clone(),
-                    query: compile_view_query(&metric.def, req, tenant_id, view),
+                    query: compile_view_query(&metric.def, req, view),
                 })
         })
         .collect()

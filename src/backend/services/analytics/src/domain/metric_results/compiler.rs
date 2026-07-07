@@ -57,19 +57,16 @@ pub struct BreakdownQueryRow {
 pub fn compile_view_query(
     def: &MetricDefinition,
     req: &ValidatedMetricResultsRequest,
-    tenant_id: &str,
     view: &ValidatedMetricView,
 ) -> CompiledQuery {
     match view {
-        ValidatedMetricView::Period => compile_period_query(def, req, tenant_id),
-        ValidatedMetricView::Peer { cohort_key } => {
-            compile_peer_query(def, req, tenant_id, cohort_key)
-        }
+        ValidatedMetricView::Period => compile_period_query(def, req),
+        ValidatedMetricView::Peer { cohort_key } => compile_peer_query(def, req, cohort_key),
         ValidatedMetricView::Timeseries { bucket, dimensions } => {
-            compile_timeseries_query(def, req, tenant_id, *bucket, dimensions)
+            compile_timeseries_query(def, req, *bucket, dimensions)
         }
         ValidatedMetricView::Breakdown { dimensions } => {
-            compile_breakdown_query(def, req, tenant_id, dimensions)
+            compile_breakdown_query(def, req, dimensions)
         }
     }
 }
@@ -77,9 +74,8 @@ pub fn compile_view_query(
 fn compile_period_query(
     def: &MetricDefinition,
     req: &ValidatedMetricResultsRequest,
-    tenant_id: &str,
 ) -> CompiledQuery {
-    let mut params = metric_params(def, req, tenant_id);
+    let mut params = metric_params(def, req);
     params.extend(req.entity_ids.iter().cloned());
     let entities = placeholders(req.entity_ids.len());
     let observation_table = observation_table(def.observation_source());
@@ -120,11 +116,10 @@ fn compile_period_query(
 fn compile_timeseries_query(
     def: &MetricDefinition,
     req: &ValidatedMetricResultsRequest,
-    tenant_id: &str,
     bucket: Bucket,
     dimensions: &[String],
 ) -> CompiledQuery {
-    let mut params = metric_params(def, req, tenant_id);
+    let mut params = metric_params(def, req);
     params.extend(req.entity_ids.iter().cloned());
     let entities = placeholders(req.entity_ids.len());
     let bucket = bucket_expr(bucket);
@@ -176,10 +171,9 @@ fn compile_timeseries_query(
 fn compile_breakdown_query(
     def: &MetricDefinition,
     req: &ValidatedMetricResultsRequest,
-    tenant_id: &str,
     dimensions: &[String],
 ) -> CompiledQuery {
-    let mut params = metric_params(def, req, tenant_id);
+    let mut params = metric_params(def, req);
     params.extend(req.entity_ids.iter().cloned());
     let entities = placeholders(req.entity_ids.len());
     let (dim_select, dim_group) = dimension_select_group(dimensions);
@@ -228,18 +222,15 @@ fn compile_breakdown_query(
 fn compile_peer_query(
     def: &MetricDefinition,
     req: &ValidatedMetricResultsRequest,
-    tenant_id: &str,
     cohort_key: &str,
 ) -> CompiledQuery {
     let mut params = Vec::new();
-    params.push(tenant_id.to_owned());
     params.push(req.entity_type.clone());
     params.push(cohort_key.to_owned());
     params.extend(req.entity_ids.iter().cloned());
-    params.push(tenant_id.to_owned());
     params.push(req.entity_type.clone());
     params.push(cohort_key.to_owned());
-    params.extend(metric_params(def, req, tenant_id));
+    params.extend(metric_params(def, req));
 
     let entities = placeholders(req.entity_ids.len());
     let observation_table = observation_table(def.observation_source());
@@ -264,8 +255,7 @@ fn compile_peer_query(
                 entity_id,
                 cohort_id
             FROM {cohort_table}
-            WHERE tenant_id = ?
-              AND entity_type = ?
+            WHERE entity_type = ?
               AND cohort_key = ?
               AND entity_id IN ({entities})
               AND cohort_id IS NOT NULL
@@ -275,8 +265,7 @@ fn compile_peer_query(
                 entity_id,
                 cohort_id
             FROM {cohort_table}
-            WHERE tenant_id = ?
-              AND entity_type = ?
+            WHERE entity_type = ?
               AND cohort_key = ?
               AND cohort_id IN (SELECT cohort_id FROM targets)
         ),
@@ -326,25 +315,26 @@ fn compile_peer_query(
     CompiledQuery { sql, params }
 }
 
+// No tenant_id predicate: warehouse tenant isolation is not implemented
+// platform-wide (the legacy query engine also queries without it), and the
+// control-plane tenant UUID has no defined mapping to the warehouse
+// tenant_id strings stamped at ingestion. The observation and cohort
+// contracts keep the tenant_id column so isolation can be added here in one
+// place once the platform defines that mapping.
 fn metric_where(def: &MetricDefinition) -> &'static str {
     match &def.spec {
         ComputationSpec::Sum { .. } => {
-            "tenant_id = ? AND source_key = ? AND entity_type = ? AND metric_date >= toDate(?) AND metric_date <= toDate(?) AND measure_key = ?"
+            "source_key = ? AND entity_type = ? AND metric_date >= toDate(?) AND metric_date <= toDate(?) AND measure_key = ?"
         }
         ComputationSpec::Ratio { .. } => {
-            "tenant_id = ? AND source_key = ? AND entity_type = ? AND metric_date >= toDate(?) AND metric_date <= toDate(?) AND measure_key IN (?, ?)"
+            "source_key = ? AND entity_type = ? AND metric_date >= toDate(?) AND metric_date <= toDate(?) AND measure_key IN (?, ?)"
         }
     }
 }
 
-fn metric_params(
-    def: &MetricDefinition,
-    req: &ValidatedMetricResultsRequest,
-    tenant_id: &str,
-) -> Vec<String> {
+fn metric_params(def: &MetricDefinition, req: &ValidatedMetricResultsRequest) -> Vec<String> {
     match &def.spec {
         ComputationSpec::Sum { value } => vec![
-            tenant_id.to_owned(),
             value.source_key.clone(),
             req.entity_type.clone(),
             req.from.to_string(),
@@ -361,7 +351,6 @@ fn metric_params(
                 denominator.measure_key.clone(),
             ];
             params.extend([
-                tenant_id.to_owned(),
                 numerator.source_key.clone(),
                 req.entity_type.clone(),
                 req.from.to_string(),
@@ -533,19 +522,14 @@ mod tests {
 
     #[test]
     fn sum_period_query_binds_scope_then_entities() {
-        let query = compile_view_query(
-            &sum_metric(),
-            &request(),
-            "tenant-1",
-            &ValidatedMetricView::Period,
-        );
+        let query = compile_view_query(&sum_metric(), &request(), &ValidatedMetricView::Period);
         assert!(query.sql.contains("FROM insight.ai_metric_observations"));
+        assert!(!query.sql.contains("tenant_id"));
         assert!(query.sql.contains("measure_key = ?"));
         assert!(query.sql.contains("GROUP BY entity_id"));
         assert_eq!(
             query.params,
             vec![
-                "tenant-1",
                 "ai_usage",
                 "person",
                 "2026-01-01",
@@ -559,12 +543,7 @@ mod tests {
 
     #[test]
     fn ratio_period_query_binds_select_measures_first() {
-        let query = compile_view_query(
-            &ratio_metric(),
-            &request(),
-            "tenant-1",
-            &ValidatedMetricView::Period,
-        );
+        let query = compile_view_query(&ratio_metric(), &request(), &ValidatedMetricView::Period);
         assert!(query.sql.contains("nullIf"));
         assert!(query.sql.contains("100 *"));
         assert!(query.sql.contains("measure_key IN (?, ?)"));
@@ -573,7 +552,6 @@ mod tests {
             vec![
                 "accepted_edit_actions",
                 "tool_use_offered",
-                "tenant-1",
                 "ai_usage",
                 "person",
                 "2026-01-01",
@@ -596,7 +574,6 @@ mod tests {
             let query = compile_view_query(
                 &sum_metric(),
                 &request(),
-                "tenant-1",
                 &ValidatedMetricView::Timeseries {
                     bucket,
                     dimensions: vec![],
@@ -616,7 +593,6 @@ mod tests {
         let query = compile_view_query(
             &sum_metric(),
             &request(),
-            "tenant-1",
             &ValidatedMetricView::Breakdown {
                 dimensions: vec!["tool".to_owned()],
             },
@@ -636,7 +612,6 @@ mod tests {
         let query = compile_view_query(
             &sum_metric(),
             &request(),
-            "tenant-1",
             &ValidatedMetricView::Peer {
                 cohort_key: "org_unit".to_owned(),
             },
@@ -652,15 +627,12 @@ mod tests {
         assert_eq!(
             query.params,
             vec![
-                "tenant-1",
                 "person",
                 "org_unit",
                 "a@x.io",
                 "b@x.io",
-                "tenant-1",
                 "person",
                 "org_unit",
-                "tenant-1",
                 "ai_usage",
                 "person",
                 "2026-01-01",
@@ -675,7 +647,6 @@ mod tests {
         let query = compile_view_query(
             &ratio_metric(),
             &request(),
-            "tenant-1",
             &ValidatedMetricView::Peer {
                 cohort_key: "org_unit".to_owned(),
             },
@@ -686,12 +657,7 @@ mod tests {
 
     #[test]
     fn queries_carry_row_limit() {
-        let query = compile_view_query(
-            &sum_metric(),
-            &request(),
-            "tenant-1",
-            &ValidatedMetricView::Period,
-        );
+        let query = compile_view_query(&sum_metric(), &request(), &ValidatedMetricView::Period);
         assert!(query.sql.contains(&format!("LIMIT {}", query_row_limit())));
     }
 }

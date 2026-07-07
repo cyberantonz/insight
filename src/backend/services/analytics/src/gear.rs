@@ -136,28 +136,6 @@ impl Gear for AnalyticsApiGear {
                 db.clone(),
                 ch.clone(),
             );
-        if let Some(warehouse_tenant) = cfg
-            .metric_results
-            .single_tenant_warehouse_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            // The override maps EVERY tenant to one warehouse tenant, which is
-            // cross-tenant data exposure on a multi-tenant install. Require the
-            // install to declare itself single-tenant via the same signal the
-            // catalog stack uses (`metric_catalog.tenant_default_id`).
-            anyhow::ensure!(
-                cfg.metric_catalog.tenant_default_id.is_some(),
-                "metric_results.single_tenant_warehouse_id is set but metric_catalog.tenant_default_id is not; \
-                 this override is only valid on single-tenant installs — refusing to start"
-            );
-            tracing::warn!(
-                warehouse_tenant = %warehouse_tenant,
-                "metric_results.single_tenant_warehouse_id is set: all tenants' metric-results queries read this warehouse tenant; valid only for single-tenant installs"
-            );
-        }
-
         // Catalog auth-trait (Refs #522 / #525). v1 stub — see `domain::auth`.
         let tenant_auth: Arc<dyn crate::domain::auth::TenantAuthorization> = Arc::new(
             ConfigTenantAuthorization::new(cfg.metric_catalog.tenant_default_id),
