@@ -12,6 +12,14 @@ use crate::domain::metric_definitions::{
 pub(crate) const UNKNOWN_DIMENSION_VALUE: &str = "__unknown__";
 pub(crate) const UNKNOWN_DIMENSION_LABEL: &str = "Unknown";
 
+/// Minimum peer-pool size for percentile disclosure. Below this, quartiles
+/// over a handful of people are noise presented as signal (someone is always
+/// "bottom 25%" of three), and with n=2 the "median" discloses the one
+/// colleague's value. Enforced here, server-side, so every consumer inherits
+/// it: the peer view still reports `n`, but p25/median/p75/min/max come back
+/// NULL and clients render "no peer data".
+pub(crate) const MIN_PEER_N: u32 = 5;
+
 #[derive(Debug)]
 pub struct CompiledQuery {
     pub sql: String,
@@ -296,11 +304,11 @@ fn compile_peer_query(
         SELECT
             targets.entity_id AS entity_id,
             target_values.value AS target_value,
-            quantileExact(0.25)(peers.value) AS p25,
-            quantileExact(0.5)(peers.value) AS median,
-            quantileExact(0.75)(peers.value) AS p75,
-            min(peers.value) AS min,
-            max(peers.value) AS max,
+            if(count(peers.value) >= {min_peer_n}, toNullable(quantileExact(0.25)(peers.value)), NULL) AS p25,
+            if(count(peers.value) >= {min_peer_n}, toNullable(quantileExact(0.5)(peers.value)), NULL) AS median,
+            if(count(peers.value) >= {min_peer_n}, toNullable(quantileExact(0.75)(peers.value)), NULL) AS p75,
+            if(count(peers.value) >= {min_peer_n}, toNullable(min(peers.value)), NULL) AS min,
+            if(count(peers.value) >= {min_peer_n}, toNullable(max(peers.value)), NULL) AS max,
             toUInt64(count(peers.value)) AS n
         FROM targets
         LEFT JOIN entity_values AS target_values
@@ -311,6 +319,7 @@ fn compile_peer_query(
         LIMIT {limit}
         ",
         metric_where = metric_where(def),
+        min_peer_n = MIN_PEER_N,
     );
     CompiledQuery { sql, params }
 }
@@ -653,6 +662,26 @@ mod tests {
         );
         assert!(query.sql.contains("metric_values.value AS value"));
         assert!(!query.sql.contains("coalesce(metric_values.value, 0)"));
+    }
+
+    #[test]
+    fn peer_queries_suppress_percentiles_below_min_pool_size() {
+        for def in [sum_metric(), ratio_metric()] {
+            let query = compile_view_query(
+                &def,
+                &request(),
+                &ValidatedMetricView::Peer {
+                    cohort_key: "org_unit".to_owned(),
+                },
+            );
+            let guard = format!("count(peers.value) >= {MIN_PEER_N}");
+            assert_eq!(
+                query.sql.matches(&guard).count(),
+                5,
+                "every percentile/min/max must carry the disclosure guard"
+            );
+            assert!(query.sql.contains("toUInt64(count(peers.value)) AS n"));
+        }
     }
 
     #[test]

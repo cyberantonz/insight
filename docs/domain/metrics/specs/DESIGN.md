@@ -259,6 +259,10 @@ Execution rules:
 - Peer starts from the generic current cohort view so zero-activity peers can be included.
 - Target entities missing cohort membership are omitted from peer values.
 - Null values are excluded from peer percentiles and `n`.
+- Peer percentiles and min/max are suppressed (returned as null) when the
+  peer pool has fewer than 5 members; `n` still reports the pool size.
+  Quartiles over a handful of people are noise, and tiny pools disclose
+  individual values. Enforced server-side so every consumer inherits it.
 
 ## Validation
 
