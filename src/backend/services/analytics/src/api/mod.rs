@@ -5,6 +5,7 @@ pub(crate) mod canonical_json;
 mod catalog;
 pub(crate) mod error;
 mod handlers;
+mod metric_results;
 
 #[cfg(test)]
 mod tenant_resolution_tests;
@@ -208,6 +209,16 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .standard_errors(openapi)
         .handler(handlers::query_metrics_batch)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/v1/metric-results")
+        .operation_id("analytics_api.metric_results.create")
+        .summary("Compute metric results")
+        .authenticated()
+        .no_license_required()
+        .json_response(StatusCode::OK, "Metric results")
+        .standard_errors(openapi)
+        .handler(metric_results::query_metric_results)
         .register(router, openapi);
 
     // Thresholds (legacy)

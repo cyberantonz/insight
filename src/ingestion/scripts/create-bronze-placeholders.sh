@@ -215,7 +215,9 @@ CREATE TABLE IF NOT EXISTS silver.class_ai_dev_usage (
     api_key_id           Nullable(String),
     day                  Date,
     tool                 String,
+    tool_label           String DEFAULT '',
     is_active            UInt8,
+    conversation_count   Nullable(Float64),
     agent_sessions       Nullable(Float64),
     chat_requests        Nullable(Float64),
     tool_use_offered     Nullable(Float64),
@@ -258,6 +260,8 @@ else
 ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS source_id String;
 ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS unique_key String;
 ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS api_key_id Nullable(String);
+ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS tool_label String DEFAULT '';
+ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS conversation_count Nullable(Float64);
 ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS lines_removed Nullable(Float64);
 ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS total_lines_removed Nullable(Float64);
 ALTER TABLE silver.class_ai_dev_usage ADD COLUMN IF NOT EXISTS commits_count Nullable(Float64);
@@ -390,7 +394,9 @@ CREATE TABLE IF NOT EXISTS silver.class_ai_assistant_usage (
     email                    String,
     day                      Date,
     tool                     String,
+    tool_label               String DEFAULT '',
     surface                  String,
+    surface_label            String DEFAULT '',
     session_count            Nullable(UInt32),
     conversation_count       Nullable(UInt32),
     message_count            Nullable(UInt32),
@@ -412,6 +418,21 @@ CREATE TABLE IF NOT EXISTS silver.class_ai_assistant_usage (
     _version                 UInt64
 ) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key COMMENT 'INSIGHT_PLACEHOLDER_v1';
 SQL
+else
+  class_ai_assistant_placeholder_count="$(
+    printf "SELECT count() FROM system.tables WHERE database='silver' AND name='class_ai_assistant_usage' AND comment='INSIGHT_PLACEHOLDER_v1'" |
+      _ch_http_query |
+      tr -d '[:space:]'
+  )"
+  if [[ "$class_ai_assistant_placeholder_count" == "1" ]]; then
+    echo "  Reconciling placeholder schema: silver.class_ai_assistant_usage"
+    run_ch <<'SQL'
+ALTER TABLE silver.class_ai_assistant_usage ADD COLUMN IF NOT EXISTS tool_label String DEFAULT '';
+ALTER TABLE silver.class_ai_assistant_usage ADD COLUMN IF NOT EXISTS surface_label String DEFAULT '';
+SQL
+  else
+    echo "  Skipping placeholder schema reconciliation: silver.class_ai_assistant_usage is not a placeholder"
+  fi
 fi
 
 # silver.class_people — identity dbt model. Used by crm-gold-views and any
@@ -422,11 +443,30 @@ if ! ch_table_exists silver class_people; then
   run_ch <<'SQL'
 CREATE TABLE IF NOT EXISTS silver.class_people (
     unique_key      String,
+    workspace_id    String DEFAULT '',
     email           Nullable(String),
+    valid_from      Nullable(String),
     department_name Nullable(String),
+    org_unit_id     Nullable(String),
     _version        UInt64
 ) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key COMMENT 'INSIGHT_PLACEHOLDER_v1';
 SQL
+else
+  class_people_placeholder_count="$(
+    printf "SELECT count() FROM system.tables WHERE database='silver' AND name='class_people' AND comment='INSIGHT_PLACEHOLDER_v1'" |
+      _ch_http_query |
+      tr -d '[:space:]'
+  )"
+  if [[ "$class_people_placeholder_count" == "1" ]]; then
+    echo "  Reconciling placeholder schema: silver.class_people"
+    run_ch <<'SQL'
+ALTER TABLE silver.class_people ADD COLUMN IF NOT EXISTS workspace_id String DEFAULT '';
+ALTER TABLE silver.class_people ADD COLUMN IF NOT EXISTS valid_from Nullable(String);
+ALTER TABLE silver.class_people ADD COLUMN IF NOT EXISTS org_unit_id Nullable(String);
+SQL
+  else
+    echo "  Skipping placeholder schema reconciliation: silver.class_people is not a placeholder"
+  fi
 fi
 
 # silver.class_crm_users — CRM dbt model (HubSpot owners + Salesforce users).
