@@ -12,20 +12,26 @@ date: 2026-07-06
 - [1. Architecture Overview](#1-architecture-overview)
   - [1.1 Architectural Vision](#11-architectural-vision)
   - [1.2 Architecture Drivers](#12-architecture-drivers)
-  - [1.3 Topology](#13-topology)
+  - [1.3 Architecture Layers](#13-architecture-layers)
 - [2. Principles & Constraints](#2-principles--constraints)
   - [2.1 Design Principles](#21-design-principles)
   - [2.2 Constraints](#22-constraints)
 - [3. Technical Architecture](#3-technical-architecture)
-  - [3.1 Component Model](#31-component-model)
-  - [3.2 Route Configuration Schema](#32-route-configuration-schema)
-  - [3.3 Generated Location Hygiene Block](#33-generated-location-hygiene-block)
-  - [3.4 Subrequest Contract](#34-subrequest-contract)
-  - [3.5 Lua Module](#35-lua-module)
+  - [3.1 Domain Model](#31-domain-model)
+  - [3.2 Component Model](#32-component-model)
+  - [3.3 API Contracts](#33-api-contracts)
+  - [3.4 Internal Dependencies](#34-internal-dependencies)
+  - [3.5 External Dependencies](#35-external-dependencies)
   - [3.6 Interactions & Sequences](#36-interactions--sequences)
-  - [3.7 Failure Handling](#37-failure-handling)
-  - [3.8 Reload Procedure](#38-reload-procedure)
-  - [3.9 Observability](#39-observability)
+  - [3.7 Database schemas & tables](#37-database-schemas--tables)
+  - [3.8 Route Configuration Schema](#38-route-configuration-schema)
+  - [3.9 Generated Location Hygiene Block](#39-generated-location-hygiene-block)
+  - [3.10 Subrequest Contract](#310-subrequest-contract)
+  - [3.11 Lua Module](#311-lua-module)
+  - [3.12 Failure Handling](#312-failure-handling)
+  - [3.13 Reload Procedure](#313-reload-procedure)
+  - [3.14 Observability](#314-observability)
+  - [3.15 Deployment Topology](#315-deployment-topology)
 - [4. Design Decisions](#4-design-decisions)
   - [DD-GW-01: nginx (OpenResty) Instead of a Custom Rust Router](#dd-gw-01-nginx-openresty-instead-of-a-custom-rust-router)
   - [DD-GW-02: Route Configurator -- Humans Never Write Locations](#dd-gw-02-route-configurator----humans-never-write-locations)
@@ -51,6 +57,8 @@ Nobody hand-writes the nginx config. A small **route configurator** (Rust CLI, r
 
 The gateway consumes the contracts the authenticator PRD defines; the FR-level drivers live there.
 
+#### Functional Drivers
+
 | Requirement | Design Response |
 |-------------|------------------|
 | `cpt-insightspec-fr-auth-authz-exchange` (consumer side) | `auth_request` to `/internal/authz` behind the Lua exchange cache; `X-Gateway-Jwt` into `Authorization` |
@@ -61,11 +69,26 @@ The gateway consumes the contracts the authenticator PRD defines; the FR-level d
 | HSTS ownership (deleted `nfr-gw-https-only`) | The gateway sets `Strict-Transport-Security` on every response -- it is the component all traffic crosses, regardless of ingress choice |
 | Fail closed (deleted `nfr-router-fail-closed`) | `auth_request` fails closed by default; Lua shapes the bare 500 into 503 + `Retry-After` problem-details |
 
+#### NFR Allocation
+
+The gateway carries its share of the NFRs the authenticator PRD pins:
+
+| NFR ID | NFR Summary | Allocated To | Design Response | Verification Approach |
+|--------|-------------|--------------|-----------------|----------------------|
+| `cpt-insightspec-nfr-auth-exchange-p95` | Exchange within 5 ms p95; 15 ms p95 total edge overhead | Lua exchange cache | Hot path is a shared-memory lookup; only about one exchange per session per cache window per pod reaches the authenticator | Load test measured at the gateway |
+| `cpt-insightspec-nfr-auth-rate-limit` | Layered `/auth/*` rate limiting | `limit_req` zone | Coarse per-IP flood guard (layer 1); precise layer 2 lives in the authenticator | Flood test: excess requests rejected at the edge before reaching the authenticator |
+| `cpt-insightspec-nfr-auth-fail-closed` | No auth without a live session check | `auth_request` + error shaping | Subrequest failure never passes through -- shaped 503 + `Retry-After`; readiness fails without a reachable authenticator | Kill the authenticator; assert 503 problem-details and not-ready |
+
 **ADRs**: decisions captured inline in [section 4](#4-design-decisions); to be extracted alongside implementation.
 
-### 1.3 Topology
+### 1.3 Architecture Layers
 
-- [ ] `p3` - **ID**: `cpt-insightspec-topology-gateway`
+| Layer | Responsibility | Technology |
+|-------|---------------|------------|
+| TLS edge | TLS termination, host routing to exactly one backend | Customer-chosen ingress controller (any) |
+| Gateway | Path routing, `auth_request` exchange, header hygiene, HSTS, coarse rate limiting | OpenResty (nginx + the Lua module) |
+| Auth | Sessions, JWT mint and exchange | [Authenticator](../authenticator/DESIGN.md) (sibling artifact) |
+| Upstreams | Business APIs and the SPA shell | Downstream services / insight-front |
 
 The gateway is a **separate service, not bound to the ingress layer at all**. The edge chain is fixed:
 
@@ -82,7 +105,6 @@ graph LR
 - The gateway owns security headers (HSTS on every response) -- they ride with the component all traffic crosses.
 - One hostname, one entry: `__Host-sid` pins the cookie to a single host, so the SPA is routed through the gateway too (`location /` to the insight-front static server). One origin, one TLS cert, one place where a path exists or does not.
 - `/internal/*` never routes (generated 404) -- nothing external can name the authenticator.
-- Deployment: OpenResty image, generated ConfigMap, reloader sidecar, at least 2 replicas; liveness `/healthz` static, readiness = authenticator `/ready` reachable.
 
 ## 2. Principles & Constraints
 
@@ -112,7 +134,7 @@ Authenticator unreachable means deny -- but as a proper 503 with `Retry-After` a
 
 - [ ] `p2` - **ID**: `cpt-insightspec-constraint-gateway-openresty`
 
-The shipped image is OpenResty; every plain-nginx directive runs unchanged under it. The Lua surface is deliberately tiny (see 3.5) and the stock-nginx `proxy_cache` fallback is documented as the exit path if the Lua module ever becomes a burden.
+The shipped image is OpenResty; every plain-nginx directive runs unchanged under it. The Lua surface is deliberately tiny (see 3.11) and the stock-nginx `proxy_cache` fallback is documented as the exit path if the Lua module ever becomes a burden.
 
 #### Routes only under `/api/`
 
@@ -122,7 +144,20 @@ Operator-defined routes must carry the `/api/` prefix (configurator-enforced). T
 
 ## 3. Technical Architecture
 
-### 3.1 Component Model
+### 3.1 Domain Model
+
+The gateway holds no business entities. The objects it owns are configuration and cache artifacts:
+
+| Entity | Purpose | Storage |
+|--------|---------|--------|
+| `routes.yaml` | Reviewable route table -- the operator-facing source of truth | Git (chart repo) |
+| Generated `nginx.conf` | Compiled routing + hygiene configuration | ConfigMap, produced by the configurator in CI |
+| Exchange-cache entry | Session token to JWT, one cache window | `lua_shared_dict` (per pod, fixed shm, LRU) |
+| Correlation id | Per-request UUIDv7 | Request-scoped, never stored |
+
+It reads nothing else: no Redis, no database, no K8s API.
+
+### 3.2 Component Model
 
 ```mermaid
 graph LR
@@ -153,7 +188,7 @@ graph LR
 Hand-written nginx config and syntax-only `nginx -t` validation are how auth and hygiene directives get forgotten. The configurator makes route validation semantic and location emission mechanical.
 
 ##### Responsibility scope
-A small Rust CLI: `routes.yaml` in, complete validated `nginx.conf` out. Enforces the schema rules (3.2) before nginx ever sees the config; emits the full hygiene block (3.3) into every generated location; emits the fixed unauthenticated surface. Golden-file snapshot tests pin the emitted config; runs in CI, so invalid YAML fails the pipeline, never the pod.
+A small Rust CLI: `routes.yaml` in, complete validated `nginx.conf` out. Enforces the schema rules (3.8) before nginx ever sees the config; emits the full hygiene block (3.9) into every generated location; emits the fixed unauthenticated surface. Golden-file snapshot tests pin the emitted config; runs in CI, so invalid YAML fails the pipeline, never the pod.
 
 ##### Responsibility boundaries
 Does not run in the pod or watch anything at runtime. Does not decide routing policy -- `routes.yaml` (reviewed in git) does.
@@ -188,7 +223,7 @@ Mints nothing, stores no sessions, verifies no signatures. Never reaches Redis o
 Three requirements stock nginx cannot meet: a worker-shared exchange cache with response-driven TTLs, per-request UUIDv7 correlation ids (a cached subrequest response cannot supply them -- an id from there would repeat for a whole cache window), and RFC 9457 error shaping that distinguishes "authenticator refused" from "unreachable" from "timed out".
 
 ##### Responsibility scope
-See 3.5. A straight-line chain, deliberately trivial: dict hit = done; miss = subrequest, cache per the authenticator's `Cache-Control`.
+See 3.11. A straight-line chain, deliberately trivial: dict hit = done; miss = subrequest, cache per the authenticator's `Cache-Control`.
 
 ##### Responsibility boundaries
 Never learns the Redis schema or exchange semantics beyond the HTTP contract (the variant where Lua reads Redis directly was considered and rejected -- it would split exchange semantics across two languages for marginal gain).
@@ -196,93 +231,45 @@ Never learns the Redis schema or exchange semantics beyond the HTTP contract (th
 ##### Related components (by ID)
 - `cpt-insightspec-component-gateway-nginx-core` -- host.
 
-### 3.2 Route Configuration Schema
+### 3.3 API Contracts
 
-- [ ] `p2` - **ID**: `cpt-insightspec-design-gateway-routes-schema`
+- [ ] `p2` - **ID**: `cpt-insightspec-interface-gateway-edge`
 
-The configurator's input contract -- the deleted Router spec's `routes.yaml` schema, salvaged nearly verbatim; the contract survives the Router's death, only the compile target changed (was: in-process route trie; now: nginx.conf). One field is dropped: `websocket_max_lifetime_seconds` (nginx cannot enforce an absolute socket lifetime; see the known issues in [section 4](#carried-over-and-known-issues)).
+- **Contracts**: consumes `cpt-insightspec-contract-auth-authz-exchange` (see 3.10); transports `cpt-insightspec-contract-auth-gateway-jwt` (injects, never inspects); fronts the URL of `cpt-insightspec-contract-auth-jwks-url`
+- **Technology**: HTTP/1.1 + WebSocket reverse proxy (OpenResty)
+- **Location**: generated `nginx.conf` (ConfigMap); the operator-facing contract is `routes.yaml` (3.8)
 
-```yaml
-version: 1
-defaults:
-  timeout_ms: 30000
-  strip_prefix: false
-  websocket: false
-  # Operator-extensible deny-list of request headers. The hardcoded
-  # gateway-reserved set (Authorization, X-Correlation-Id,
-  # X-Forwarded-*, gateway cookies) is always stripped in addition.
-  strip_request_headers:
-    - X-Real-IP
-    - Forwarded
-routes:
-  - prefix: /api/v1/analytics
-    upstream: http://analytics.insight.svc.cluster.local:8081
-    timeout_ms: 60000
-    strip_prefix: false
+**Endpoints Overview**:
 
-  - prefix: /api/v1/identity
-    upstream: http://identity.insight.svc.cluster.local:8082
+| Method | Path | Description | Stability |
+|--------|------|-------------|-----------|
+| ANY | `/` | SPA shell, proxied to insight-front | stable |
+| ANY | `/auth/*` | Plain proxy to the authenticator (no `auth_request` -- it IS the auth); coarse `limit_req` | stable |
+| GET | `/.well-known/jwks.json` | Proxy to the authenticator | stable |
+| ANY | `/api/**` | `auth_request` exchange, hygiene block, proxy to the routed upstream | stable |
+| GET | `/healthz` | Static liveness | stable |
+| ANY | `/internal/*` | 404, always | stable |
 
-  - prefix: /api/v1/stream
-    upstream: http://analytics.insight.svc.cluster.local:8081
-    websocket: true
-    timeout_ms: 0
-```
+### 3.4 Internal Dependencies
 
-Validation rules (enforced by the configurator in CI, before nginx ever sees the config):
+| Dependency Module | Interface Used | Purpose |
+|-------------------|----------------|----------|
+| Authenticator | `GET /internal/authz` subrequest (`cpt-insightspec-contract-auth-authz-exchange`) | Cookie-to-JWT exchange; also the readiness signal |
+| Authenticator | `/auth/*` + JWKS plain proxy | Login surface and key distribution |
+| insight-front | HTTP (static) | SPA shell at `/` |
+| Downstream services | HTTP upstreams from `routes.yaml` | Routed business APIs |
 
-- `version` must be a known schema version.
-- `prefix` unique across the table; no two routes share an exact prefix.
-- `prefix` must start with `/api/`.
-- `upstream` must be a valid URL with hostname and port.
-- `timeout_ms >= 0`; `0` only allowed when `websocket: true`.
-- `strip_request_headers` entries must be valid HTTP header names; reserved gateway headers (`Authorization`, `X-Correlation-Id`, `X-Forwarded-*`, gateway cookies) **MUST NOT** appear in this list -- they are stripped unconditionally. `X-Tenant-ID` is **not** reserved and must pass through (it is the tenant selector the downstream middleware validates against the signed `tenants[]`).
+The gateway is configuration, not code -- it consumes no SDK crates and exposes none; its inter-module contracts are the HTTP surfaces above.
 
-**Why the defaults strip `X-Real-IP` and `Forwarded` -- and how backends still get the client IP.** Those two are *inbound, client-writable* identity headers: the gateway never sets them, so any value arriving upstream could only have come from the browser -- an attacker sending `Forwarded: for=1.2.3.4` would spoof IP-based audit trails, rate-limit keys, or geo logic in any backend that reads them. Stripping them leaves exactly **one source of client-IP truth**: the `X-Forwarded-For` chain, which the gateway strips from the client unconditionally (reserved set) and re-writes itself (hygiene block item 5), resolving the true peer address via `set_real_ip_from` trust of the ingress hops. Backends read client IP from that header and nothing else; the authenticator's session records (`ip` captured at login) rely on the same chain. Same trust model as the tenant selector: an unsigned inbound header is never authority. If an upstream ever genuinely needs `X-Real-IP`, the configurator emits it gateway-written (`$remote_addr` after real-ip resolution) as a hygiene-block addition -- do not remove it from the strip list, which would reintroduce the client-writable variant.
+### 3.5 External Dependencies
 
-### 3.3 Generated Location Hygiene Block
+#### Ingress controller (cluster-provided)
 
-Every generated `/api/` location gets, without exception (this is what closes the deleted spec's header-hygiene and auth-bypass risks by construction):
+| Dependency Module | Interface Used | Purpose |
+|-------------------|---------------|---------|
+| Ingress controller (any -- customer/cluster choice) | Plain HTTP behind TLS | TLS termination and host routing to the gateway Service; deliberately nothing else (see DD-GW-04) |
 
-1. `auth_request` to the internal exchange location, with `auth_request_set` capturing `X-Gateway-Jwt`.
-2. `Authorization` set to the captured JWT -- replacing anything the browser sent.
-3. Cookie strip: the `__Host-sid` (and CSRF) cookies never travel upstream (regex `map` over the `Cookie` header).
-4. Per-request `X-Correlation-Id` (UUIDv7 from Lua; any client-supplied value stripped).
-5. `X-Forwarded-For` / `X-Forwarded-Proto` / `Host` set by the gateway -- the single, gateway-authored source of client-IP truth for every upstream (client-supplied `X-Forwarded-*` is stripped unconditionally, and the client-writable alternatives `X-Real-IP` / `Forwarded` are stripped by the defaults; see the note under 3.2). `set_real_ip_from` trusts only the ingress hops (otherwise the per-IP flood-guard key silently becomes the LB address).
-6. Operator `strip_request_headers` from `defaults`.
-7. Per-route `proxy_read_timeout` from `timeout_ms`; WebSocket upgrade boilerplate when `websocket: true`; `proxy_buffering off`.
-8. `error_page` wiring for the fail-closed exits (3.7).
-
-CI proof: a poisoned-request snapshot test per generated route (forged `Authorization`, junk cookies, junk correlation id sent in; assert what the upstream stub receives), and a no-cookie-means-401 assertion on every `/api/` route.
-
-### 3.4 Subrequest Contract
-
-The gateway side of `cpt-insightspec-contract-auth-authz-exchange` ([authenticator PRD section 7.2](../authenticator/PRD.md#72-external-integration-contracts)) -- an explicit interface between two artifacts, covered by an e2e test so drift cannot go unnoticed:
-
-| Element | Value |
-|---|---|
-| Subrequest target | `GET /internal/authz` on the authenticator (internal nginx location, `internal;`, request body not forwarded) |
-| Allow | subrequest `200`; JWT arrives in the `X-Gateway-Jwt` response header, injected upstream as `Authorization` |
-| Deny | subrequest `401` -- returned to the client with `WWW-Authenticate` and a login URL body; never cached (`no-store`) |
-| Unavailable | any other subrequest outcome -- shaped to `503` + `Retry-After` (3.7) |
-| Cache TTL | driven entirely by the authenticator's `Cache-Control: max-age` (bounded by its `authz_cache_max_age`, default 30 s; already discounted for the JWT travel margin) |
-| Cache key | the session-token cookie value (extracted by regex `map`; `$cookie_*` variables cannot address the dash in `__Host-sid`) |
-
-Revocation staleness price, stated honestly: logout / revoke-all / back-channel / `invalid_grant` take effect at the gateway within at most the cache max-age (default 30 s -- well inside the 300 s acceptance bound), and the cache is per gateway pod, so staleness does not grow with replicas. `authz_cache_max_age_seconds: 0` disables caching for per-request checks.
-
-### 3.5 Lua Module
-
-- [ ] `p2` - **ID**: `cpt-insightspec-design-gateway-lua-module`
-
-About 50 lines of access-phase Lua plus helpers, deliberately trivial:
-
-- **Exchange cache**: `lua_shared_dict jwt_cache` -- cookie token in, JWT out. Hit: set `Authorization`, done. Miss: subrequest to the exchange, cache per the response `Cache-Control` (never a non-200). The dict is a **pre-allocated fixed-size shared-memory zone with native LRU eviction**: it structurally cannot grow past its declared size (gateway OOM via cache is impossible by construction), and eviction costs one extra subrequest on the next hit for the evicted session. Sizing: an entry is cookie token + JWT, about 1.5 KB; entries expire with their max-age, so steady state tracks sessions active per cache window; the default `64m` zone covers roughly 40k concurrently active sessions -- a set-and-forget Helm value emitted by the configurator.
-- **Correlation ids**: per-request UUIDv7 generated in the access phase and injected as `X-Correlation-Id` -- never read from the cacheable subrequest response. Stock-nginx `$request_id` (random hex) is the documented fallback.
-- **Error shaping**: the access phase sees the subrequest outcome directly and emits RFC 9457 problem-details distinguishing refused / unreachable / timed out, with a dynamic `Retry-After` -- the same error format the toolkit's canonical errors produce, one format from the edge to the gear.
-
-Testing scales to the module's triviality: a handful of e2e cases covering the two failure modes that would hurt silently (a cached 401; caching past the `Cache-Control` TTL) -- no unit tests for uuid generation or other plumbing.
-
-**Documented exit path**: stock-nginx `proxy_cache` on the auth subrequest location (keyed by the cookie `map`, `proxy_cache_lock` collapsing concurrent misses -- the documented pattern for caching token introspection) delivers the same cache contract with zero code, minus the UUIDv7 and error-shaping extras. The subrequest contract is identical either way.
+No other external systems: the gateway never talks to Redis, the IdP, or the K8s API.
 
 ### 3.6 Interactions & Sequences
 
@@ -327,7 +314,99 @@ sequenceDiagram
 
 **Description**: The hot path costs a shared-memory lookup per request; only about one exchange per session per cache window per pod reaches the authenticator.
 
-### 3.7 Failure Handling
+### 3.7 Database schemas & tables
+
+None -- the gateway is deliberately stateless: no database, no Redis, no persistent volumes. Its only mutable state is the per-pod `lua_shared_dict` exchange cache (fixed-size shared memory, native LRU; entries expire with their `Cache-Control` max-age; see 3.11), fully reconstructible from subrequests at any moment. Losing a pod loses nothing.
+
+### 3.8 Route Configuration Schema
+
+- [ ] `p2` - **ID**: `cpt-insightspec-design-gateway-routes-schema`
+
+The configurator's input contract -- the deleted Router spec's `routes.yaml` schema, salvaged nearly verbatim; the contract survives the Router's death, only the compile target changed (was: in-process route trie; now: nginx.conf). One field is dropped: `websocket_max_lifetime_seconds` (nginx cannot enforce an absolute socket lifetime; see the known issues in [section 4](#carried-over-and-known-issues)).
+
+```yaml
+version: 1
+defaults:
+  timeout_ms: 30000
+  strip_prefix: false
+  websocket: false
+  # Operator-extensible deny-list of request headers. The hardcoded
+  # gateway-reserved set (Authorization, X-Correlation-Id,
+  # X-Forwarded-*, gateway cookies) is always stripped in addition.
+  strip_request_headers:
+    - X-Real-IP
+    - Forwarded
+routes:
+  - prefix: /api/v1/analytics
+    upstream: http://analytics.insight.svc.cluster.local:8081
+    timeout_ms: 60000
+    strip_prefix: false
+
+  - prefix: /api/v1/identity
+    upstream: http://identity.insight.svc.cluster.local:8082
+
+  - prefix: /api/v1/stream
+    upstream: http://analytics.insight.svc.cluster.local:8081
+    websocket: true
+    timeout_ms: 0
+```
+
+Validation rules (enforced by the configurator in CI, before nginx ever sees the config):
+
+- `version` must be a known schema version.
+- `prefix` unique across the table; no two routes share an exact prefix.
+- `prefix` must start with `/api/`.
+- `upstream` must be a valid URL with hostname and port.
+- `timeout_ms >= 0`; `0` only allowed when `websocket: true`.
+- `strip_request_headers` entries must be valid HTTP header names; reserved gateway headers (`Authorization`, `X-Correlation-Id`, `X-Forwarded-*`, gateway cookies) **MUST NOT** appear in this list -- they are stripped unconditionally. `X-Tenant-ID` is **not** reserved and must pass through (it is the tenant selector the downstream middleware validates against the signed `tenants[]`).
+
+**Why the defaults strip `X-Real-IP` and `Forwarded` -- and how backends still get the client IP.** Those two are *inbound, client-writable* identity headers: the gateway never sets them, so any value arriving upstream could only have come from the browser -- an attacker sending `Forwarded: for=1.2.3.4` would spoof IP-based audit trails, rate-limit keys, or geo logic in any backend that reads them. Stripping them leaves exactly **one source of client-IP truth**: the `X-Forwarded-For` chain, which the gateway strips from the client unconditionally (reserved set) and re-writes itself (hygiene block item 5), resolving the true peer address via `set_real_ip_from` trust of the ingress hops. Backends read client IP from that header and nothing else; the authenticator's session records (`ip` captured at login) rely on the same chain. Same trust model as the tenant selector: an unsigned inbound header is never authority. If an upstream ever genuinely needs `X-Real-IP`, the configurator emits it gateway-written (`$remote_addr` after real-ip resolution) as a hygiene-block addition -- do not remove it from the strip list, which would reintroduce the client-writable variant.
+
+### 3.9 Generated Location Hygiene Block
+
+Every generated `/api/` location gets, without exception (this is what closes the deleted spec's header-hygiene and auth-bypass risks by construction):
+
+1. `auth_request` to the internal exchange location, with `auth_request_set` capturing `X-Gateway-Jwt`.
+2. `Authorization` set to the captured JWT -- replacing anything the browser sent.
+3. Cookie strip: the `__Host-sid` (and CSRF) cookies never travel upstream (regex `map` over the `Cookie` header).
+4. Per-request `X-Correlation-Id` (UUIDv7 from Lua; any client-supplied value stripped).
+5. `X-Forwarded-For` / `X-Forwarded-Proto` / `Host` set by the gateway -- the single, gateway-authored source of client-IP truth for every upstream (client-supplied `X-Forwarded-*` is stripped unconditionally, and the client-writable alternatives `X-Real-IP` / `Forwarded` are stripped by the defaults; see the note under 3.8). `set_real_ip_from` trusts only the ingress hops (otherwise the per-IP flood-guard key silently becomes the LB address).
+6. Operator `strip_request_headers` from `defaults`.
+7. Per-route `proxy_read_timeout` from `timeout_ms`; WebSocket upgrade boilerplate when `websocket: true`; `proxy_buffering off`.
+8. `error_page` wiring for the fail-closed exits (3.12).
+
+CI proof: a poisoned-request snapshot test per generated route (forged `Authorization`, junk cookies, junk correlation id sent in; assert what the upstream stub receives), and a no-cookie-means-401 assertion on every `/api/` route.
+
+### 3.10 Subrequest Contract
+
+The gateway side of `cpt-insightspec-contract-auth-authz-exchange` ([authenticator PRD section 7.2](../authenticator/PRD.md#72-external-integration-contracts)) -- an explicit interface between two artifacts, covered by an e2e test so drift cannot go unnoticed:
+
+| Element | Value |
+|---|---|
+| Subrequest target | `GET /internal/authz` on the authenticator (internal nginx location, `internal;`, request body not forwarded) |
+| Allow | subrequest `200`; JWT arrives in the `X-Gateway-Jwt` response header, injected upstream as `Authorization` |
+| Deny | subrequest `401` -- returned to the client with `WWW-Authenticate` and a login URL body; never cached (`no-store`) |
+| Unavailable | any other subrequest outcome -- shaped to `503` + `Retry-After` (3.12) |
+| Cache TTL | driven entirely by the authenticator's `Cache-Control: max-age` (bounded by its `authz_cache_max_age`, default 30 s; already discounted for the JWT travel margin) |
+| Cache key | the session-token cookie value (extracted by regex `map`; `$cookie_*` variables cannot address the dash in `__Host-sid`) |
+
+Revocation staleness price, stated honestly: logout / revoke-all / back-channel / `invalid_grant` take effect at the gateway within at most the cache max-age (default 30 s -- well inside the 300 s acceptance bound), and the cache is per gateway pod, so staleness does not grow with replicas. `authz_cache_max_age_seconds: 0` disables caching for per-request checks.
+
+### 3.11 Lua Module
+
+- [ ] `p2` - **ID**: `cpt-insightspec-design-gateway-lua-module`
+
+About 50 lines of access-phase Lua plus helpers, deliberately trivial:
+
+- **Exchange cache**: `lua_shared_dict jwt_cache` -- cookie token in, JWT out. Hit: set `Authorization`, done. Miss: subrequest to the exchange, cache per the response `Cache-Control` (never a non-200). The dict is a **pre-allocated fixed-size shared-memory zone with native LRU eviction**: it structurally cannot grow past its declared size (gateway OOM via cache is impossible by construction), and eviction costs one extra subrequest on the next hit for the evicted session. Sizing: an entry is cookie token + JWT, about 1.5 KB; entries expire with their max-age, so steady state tracks sessions active per cache window; the default `64m` zone covers roughly 40k concurrently active sessions -- a set-and-forget Helm value emitted by the configurator.
+- **Correlation ids**: per-request UUIDv7 generated in the access phase and injected as `X-Correlation-Id` -- never read from the cacheable subrequest response. Stock-nginx `$request_id` (random hex) is the documented fallback.
+- **Error shaping**: the access phase sees the subrequest outcome directly and emits RFC 9457 problem-details distinguishing refused / unreachable / timed out, with a dynamic `Retry-After` -- the same error format the toolkit's canonical errors produce, one format from the edge to the gear.
+
+Testing scales to the module's triviality: a handful of e2e cases covering the two failure modes that would hurt silently (a cached 401; caching past the `Cache-Control` TTL) -- no unit tests for uuid generation or other plumbing.
+
+**Documented exit path**: stock-nginx `proxy_cache` on the auth subrequest location (keyed by the cookie `map`, `proxy_cache_lock` collapsing concurrent misses -- the documented pattern for caching token introspection) delivers the same cache contract with zero code, minus the UUIDv7 and error-shaping extras. The subrequest contract is identical either way.
+
+### 3.12 Failure Handling
 
 Based on the decision document's failure analysis; upstream errors keep their own status codes because `proxy_intercept_errors` stays off:
 
@@ -344,7 +423,7 @@ Based on the decision document's failure analysis; upstream errors keep their ow
 | Invalid generated config at reload | `nginx -t` refuses; old workers keep serving (last-good-config) |
 | Gateway pod without reachable authenticator | readiness fails (readiness = authenticator `/ready`) |
 
-### 3.8 Reload Procedure
+### 3.13 Reload Procedure
 
 Route changes are a deploy-time pipeline, not a runtime watcher:
 
@@ -356,13 +435,24 @@ Route changes are a deploy-time pipeline, not a runtime watcher:
 
 Config-reload audit events are emitted from CI/CD rather than a runtime watcher.
 
-### 3.9 Observability
+### 3.14 Observability
 
 Edge observability is deliberately three sources (degraded against the deleted Router's in-process histograms -- accepted):
 
 - **JSON access logs** (status, duration, upstream time, route, correlation id) -- the per-request source of truth, shipped to the log pipeline. Never log cookie values or JWTs.
 - **nginx-prometheus-exporter** for basics (connections, requests, statuses).
 - **Authenticator metrics** -- which, behind the exchange cache, see only cache misses; per-request counters come from the access logs, not the authenticator.
+
+### 3.15 Deployment Topology
+
+- [ ] `p3` - **ID**: `cpt-insightspec-topology-gateway`
+
+One OpenResty Deployment (at least 2 replicas) behind the single ingress backend, per the edge chain fixed in 1.3:
+
+- Image: OpenResty; config mounted from the ConfigMap the configurator generated in CI; the Lua module ships in the image.
+- Reloader sidecar (or checksum-annotation pod roll) applies config changes with `nginx -t && nginx -s reload` (3.13).
+- Probes: liveness = static `/healthz`; readiness = authenticator `/ready` reachable (a gateway pod that cannot authenticate anything must not receive traffic).
+- No volumes, no Redis, no K8s API access -- mounted files only; pods are disposable (3.7).
 
 ## 4. Design Decisions
 
@@ -377,7 +467,7 @@ Edge observability is deliberately three sources (degraded against the deleted R
 - Ops already run nginx twice in this stack; `curl` + access logs beat debugging a custom proxy.
 - Less privileged runtime: no K8s API RBAC for ConfigMap/Secret watches -- mounted files only.
 
-**Consequences**: One extra in-cluster hop on exchange-cache misses (absorbed by DD-GW-03; the 15 ms p95 budget holds comfortably); edge observability degrades to three sources (3.9); the WebSocket absolute-lifetime cap is lost at the edge (known issue below); the deleted `nfr-gw-single-binary` NFR is retired deliberately.
+**Consequences**: One extra in-cluster hop on exchange-cache misses (absorbed by DD-GW-03; the 15 ms p95 budget holds comfortably); edge observability degrades to three sources (3.14); the WebSocket absolute-lifetime cap is lost at the edge (known issue below); the deleted `nfr-gw-single-binary` NFR is retired deliberately.
 
 ### DD-GW-02: Route Configurator -- Humans Never Write Locations
 
@@ -399,7 +489,7 @@ Edge observability is deliberately three sources (degraded against the deleted R
 - Fixed-size shm with native LRU makes memory safety free -- the same bounded-cache philosophy the deleted spec chose for its Redis JWT cache.
 - Having Lua at the edge pays twice more: per-request UUIDv7 correlation ids and RFC 9457 error shaping.
 
-**Consequences**: Revocation reaches the gateway within max-age (default 30 s, bound stated in 3.4); per-pod caching means no cross-replica coherence machinery and no growth of staleness with replicas. The Lua-reads-Redis variant stays rejected (splits exchange semantics across two languages); the stock `proxy_cache` fallback stays documented as the exit.
+**Consequences**: Revocation reaches the gateway within max-age (default 30 s, bound stated in 3.10); per-pod caching means no cross-replica coherence machinery and no growth of staleness with replicas. The Lua-reads-Redis variant stays rejected (splits exchange semantics across two languages); the stock `proxy_cache` fallback stays documented as the exit.
 
 ### DD-GW-04: Ingress-Orthogonal Topology
 

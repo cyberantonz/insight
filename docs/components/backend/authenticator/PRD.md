@@ -97,17 +97,13 @@ The previously specified remedy -- a single Rust API Gateway binary combining a 
 
 #### Tenant Administrator
 
-**ID**: `cpt-insightspec-actor-tenant-admin`
-
-**Role**: Already defined in the parent backend PRD. Additionally needs to revoke any user's sessions (forced logout on role change, offboarding, suspected compromise).
+Defined in the [parent backend PRD](../specs/PRD.md) as `cpt-insightspec-actor-tenant-admin`. In this module the Tenant Administrator additionally needs to revoke any user's sessions (forced logout on role change, offboarding, suspected compromise).
 
 ### 2.2 System Actors
 
 #### OIDC Provider
 
-**ID**: `cpt-insightspec-actor-oidc-provider`
-
-**Role**: Customer identity provider. Runs the authorization code + PKCE flow, issues refresh tokens, may call back-channel logout.
+Defined in the [parent backend PRD](../specs/PRD.md) as `cpt-insightspec-actor-oidc-provider`. In this module the customer identity provider runs the authorization code + PKCE flow, issues refresh tokens to the authenticator, and may call back-channel logout.
 
 #### Nginx Gateway
 
