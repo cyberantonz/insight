@@ -69,6 +69,13 @@ compilation, and runtime schema validation against these relations. Column
 changes are coordinated changes: dbt model + `schema.yml` + backend
 `OBSERVATION_COLUMNS`/`COHORT_COLUMNS` + this document.
 
+Gold models are built at deploy time by the ClickHouse migrate hook
+(`dbt run --select tag:gold`, final step of
+`src/ingestion/scripts/apply-ch-migrations.sh`), so the views exist before
+any connector sync — bronze/silver placeholders guarantee the DDL
+type-checks on a fresh cluster. Per-connector scoped dbt runs keep them
+current afterwards.
+
 The cohort view is unique per `(tenant_id, entity_type, entity_id,
 cohort_key)`. The peer query relies on this; a dbt build-integrity test
 asserts it.

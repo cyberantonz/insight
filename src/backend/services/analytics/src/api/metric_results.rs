@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use toolkit_canonical_errors::CanonicalError;
 
 use super::AppState;
+use super::error::MetricError;
 use crate::domain::metric_definitions::MetricDefinition;
 use crate::domain::metric_results::{
     BreakdownQueryRow, CompiledQuery, MetricResultViewDto, MetricResultsRequest,
@@ -153,7 +154,7 @@ where
 
     let mut cursor = ch_query.fetch_bytes("JSONEachRow").map_err(|e| {
         tracing::error!(error = %e, sql = %query.sql, "ClickHouse metric-results query failed");
-        CanonicalError::internal("query execution failed").create()
+        map_query_error(&e.to_string())
     })?;
 
     let raw_bytes = tokio::time::timeout(QUERY_FETCH_TIMEOUT, cursor.collect())
@@ -164,7 +165,7 @@ where
         })?
         .map_err(|e| {
             tracing::error!(error = %e, sql = %query.sql, "ClickHouse metric-results fetch failed");
-            CanonicalError::internal("query execution failed").create()
+            map_query_error(&e.to_string())
         })?;
 
     if raw_bytes.is_empty() {
@@ -180,4 +181,46 @@ where
             tracing::error!(error = %e, "failed to parse metric-results rows");
             CanonicalError::internal("failed to parse query results").create()
         })
+}
+
+// A missing observation/cohort relation is a known transient state (dbt has
+// not built the view yet, or a model regressed) that the validator sweep
+// converges on — surface it as a typed precondition failure instead of a
+// 500. UNKNOWN_TABLE is ClickHouse error code 60.
+fn map_query_error(message: &str) -> CanonicalError {
+    if message.contains("UNKNOWN_TABLE") || message.contains("Code: 60") {
+        return MetricError::failed_precondition()
+            .with_precondition_violation(
+                "metric source relation",
+                "The observation or cohort view backing this metric has not been built yet; it converges on the next validation sweep.",
+                "SOURCE_RELATION_MISSING",
+            )
+            .create();
+    }
+    CanonicalError::internal("query execution failed").create()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    use super::map_query_error;
+
+    #[test]
+    fn missing_relation_maps_to_precondition_failure_not_500() {
+        let err = map_query_error(
+            "bad response: Code: 60. DB::Exception: Table insight.ai_metric_observations does not exist. (UNKNOWN_TABLE)",
+        );
+        let status = err.into_response().status();
+        assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(status.is_client_error());
+    }
+
+    #[test]
+    fn other_query_errors_stay_internal() {
+        let err = map_query_error("Code: 241. DB::Exception: Memory limit exceeded");
+        let status = err.into_response().status();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }

@@ -14,6 +14,8 @@
 #      stubs so gold-view CREATE VIEW type-checks on a fresh cluster
 #      (CH validates referenced tables at parse time). See ADR-0007.
 #   3. Apply migrations/*.sql in lexicographic order.
+#   4. Build the dbt gold models (tag:gold) so dbt-owned views exist at
+#      deploy time instead of after the first connector sync.
 #
 # Bookkeeping: none — every migration is re-run on every invocation and
 # MUST stay idempotent/re-runnable (CREATE OR REPLACE / IF NOT EXISTS).
@@ -48,5 +50,51 @@ for migration in "$SCRIPT_DIR/migrations"/*.sql; do
   echo "  $(basename "$migration")"
   run_ch < "$migration"
 done
+
+echo "=== Building gold models (dbt run --select tag:gold) ==="
+# Gold views are dbt-owned but must exist at DEPLOY time, not first-sync
+# time: the analytics service marks metric definitions schema-error while
+# an observation view is missing, which blanks those metrics for every
+# frontend request until the first connector sync builds the view (hours
+# on a scheduled instance). The placeholders created above guarantee every
+# relation the views reference exists, so this run type-checks on a fresh
+# cluster — the same guarantee the scoped per-connector dbt runs rely on
+# for sideways refs. Idempotent: view materialization is create-or-replace.
+#
+# Profile generation mirrors the dbt-run WorkflowTemplate: python3 writes
+# profiles.yml from env vars, never interpolating values into YAML text.
+DBT_PROFILES_DIR="$(mktemp -d)"
+export DBT_PROFILES_DIR
+python3 - <<'PY'
+import os
+from urllib.parse import urlparse
+
+import yaml
+
+url = urlparse(os.environ["CLICKHOUSE_URL"])
+profile = {
+    "ingestion": {
+        "target": "migrate",
+        "outputs": {
+            "migrate": {
+                "type": "clickhouse",
+                "host": url.hostname,
+                "port": url.port or (8443 if url.scheme == "https" else 8123),
+                "schema": "silver",
+                "user": os.environ["CLICKHOUSE_USER"],
+                "password": os.environ["CLICKHOUSE_PASSWORD"],
+                "secure": url.scheme == "https",
+                "send_receive_timeout": 1500,
+                "query_limit": 0,
+                "connect_timeout": 30,
+            }
+        },
+    }
+}
+with open(os.path.join(os.environ["DBT_PROFILES_DIR"], "profiles.yml"), "w") as f:
+    yaml.safe_dump(profile, f)
+PY
+(cd "$SCRIPT_DIR/../dbt" && dbt run --profiles-dir "$DBT_PROFILES_DIR" --log-format json --select tag:gold)
+rm -rf "$DBT_PROFILES_DIR"
 
 echo "=== ClickHouse migrations complete ==="
