@@ -326,6 +326,10 @@ Schema validation checks:
   `unchecked`, never `error`: filtered measures legitimately go quiet, and
   absence of data is indistinguishable from an unemitted measure.
 - probe failures never overwrite a previously established status.
+- the validator sweeps periodically, not once at startup: managed relations
+  are dbt-created and may appear after the service boots (fresh deploys) or
+  regress later (a bad model change); both converge within one sweep with no
+  restart.
 - warehouse diagnostics stay server-side.
 
 ## Adding a Metric

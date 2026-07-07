@@ -170,9 +170,10 @@ impl Gear for AnalyticsApiGear {
         tokio::spawn(async move {
             validator.validate_all().await;
         });
-        tokio::spawn(async move {
-            metric_definition_validator.validate_all().await;
-        });
+        // Periodic, not one-shot: the managed observation views are
+        // dbt-created after boot on a fresh deploy, and the registry has no
+        // write path that would re-trigger probing.
+        tokio::spawn(metric_definition_validator.run());
 
         Ok(())
     }

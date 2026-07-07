@@ -12,6 +12,12 @@ use crate::domain::metric_definitions::repository::{
 };
 
 const PROBE_WINDOW_DAYS: u32 = 35;
+// Managed observation relations are dbt-created and can appear (or regress)
+// while the service is running — a one-shot startup scan would pin
+// `table_not_found` until the next pod restart. Sweeps are idempotent:
+// transient probe failures never overwrite an established status, and
+// status writes pin `updated_at`.
+const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
 
 #[derive(Clone)]
 pub struct MetricDefinitionValidator {
@@ -22,6 +28,17 @@ pub struct MetricDefinitionValidator {
 impl MetricDefinitionValidator {
     pub fn new(db: DatabaseConnection, ch: insight_clickhouse::Client) -> Self {
         Self { db, ch }
+    }
+
+    /// Periodic sweep: validates immediately, then every [`SWEEP_INTERVAL`].
+    /// Never returns; run it on a spawned task.
+    pub async fn run(self) {
+        let mut ticks = tokio::time::interval(SWEEP_INTERVAL);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            self.validate_all().await;
+        }
     }
 
     pub async fn validate_all(&self) {
