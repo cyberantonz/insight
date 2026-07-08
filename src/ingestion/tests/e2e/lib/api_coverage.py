@@ -1,44 +1,18 @@
 #!/usr/bin/env python3
 """API endpoint coverage report — which analytics routes the e2e suite exercises.
 
-Two halves:
+Recording half (imported by the rig): `record_response` is an httpx response
+event-hook on the single client every suite request flows through; it records
+`(method, path) -> {status codes}` into a module-level ledger that
+`conftest.pytest_sessionfinish` dumps to `.artifacts/observed_endpoints.json`.
 
-  1. RECORDING (imported by the rig). `record_response` is an httpx response
-     event-hook attached in `AnalyticsProcess.client()` — the single point
-     every suite request flows through (metric tests via `call_request`, smoke
-     tests directly). It records `(method, path) -> {status codes}` into a
-     module-level ledger. `conftest.pytest_sessionfinish` calls `dump_observed`
-     to write it to `.artifacts/observed_endpoints.json`.
-
-  2. GATE (run as a plain file, stdlib only — blocking in `./e2e.sh gates`
-     and the api-endpoint-coverage-gate CI job). `main` loads that ledger plus
-     the committed OpenAPI spec (the universe — kept accurate by the analytics
-     OpenAPI drift gate) and reports, per documented operation, which declared
-     status codes the suite actually validated.
-
-     BLOCKING is at the OPERATION level: the gate FAILS only when a documented
-     operation is exercised by NO test — a new endpoint added to the spec
-     without a matching contract test — or when a SKIP_LIST entry rots (now
-     exercised, or gone from the spec). It does NOT fail on individual unobserved
-     status codes; a covered endpoint that only exercised some of its codes still
-     passes.
-
-     PER-STATUS-CODE coverage is REPORTED, not enforced: for each operation the
-     report marks every declared code `✓` observed / `✗` declared-but-unobserved
-     / `·` excluded, and prints an overall coverage percentage. The percentage's
-     denominator is the "coverable" codes — declared minus the ones a black-box
-     rig cannot deterministically produce:
-       • server-fault 5xx (500) — not deterministically inducible;
-       • UNIVERSAL_BOILERPLATE (401/429) — declared on every route by the
-         `.standard_errors` boilerplate but never emitted (auth disabled, no
-         rate limiter); and
-       • BLOCKED[op] — a per-op set the handler cannot answer: SPEC BOILERPLATE
-         (the committed spec over-declares 403/404/409/400 on routes that cannot
-         answer them — a spec bug, #1669) OR RIG/PRODUCT (persons no Identity
-         backend; #1663/#1664). These render `·` and never count against the %.
-     Excluded-set hygiene (a `·` code now observed, or a BLOCKED op gone from the
-     spec) is surfaced as a NON-blocking advisory, so the suppression list stays
-     honest without failing CI when a bug/backend is fixed.
+Gate half (`python3 lib/api_coverage.py`, stdlib only; blocking in `./e2e.sh
+gates` and CI): loads that ledger plus the committed OpenAPI spec and reports
+per-operation coverage. The gate FAILS only when a documented operation is
+exercised by no test, or a SKIP_LIST entry rots. Per-status-code coverage is
+REPORTED, not enforced: each declared code is `✓` observed / `✗` unobserved /
+`·` excluded (5xx + UNIVERSAL_BOILERPLATE + BLOCKED[op], see below). Excluded-set
+hygiene is a non-blocking advisory. Rationale: docs/domain/bronze-to-api-e2e/specs.
 
     python3 lib/api_coverage.py --observed .artifacts/observed_endpoints.json \
         --spec docs/components/backend/analytics/openapi.json
@@ -54,47 +28,28 @@ from pathlib import Path
 
 _HTTP_METHODS = ("get", "put", "post", "delete", "patch", "head", "options", "trace")
 
-# Operations the e2e suite does NOT exercise, with the reason. Universe is the
-# committed OpenAPI spec; anything here that the suite DOES hit (redundant) or
-# that is no longer in the spec (stale) fails the gate so the list stays honest.
-# Key = "METHOD path" (path verbatim from the spec, including {param} segments).
-#
-# EMPTY on purpose: the api/ contract tests exercise every operation in the
-# spec. Add an entry only for a new operation that genuinely cannot run in the
-# rig (with the reason) — and prefer a contract test instead.
+# Operations no test exercises, "METHOD path" -> reason. A listed op the suite
+# DOES hit (redundant) or that left the spec (stale) fails the gate. EMPTY on
+# purpose: the api/ contract tests exercise every operation.
 SKIP_LIST: list[tuple[str, str]] = []
 
-# Codes at or above this are declared for spec fidelity but never REQUIRED and
-# dropped from the report: a server/infra fault (500) is not deterministically
-# inducible by a black-box contract test.
+# Server-fault codes (>= this) are declared for spec fidelity but never required:
+# a black-box contract test can't deterministically induce a 500.
 SERVER_FAULT_FLOOR = 500
 
-# SPEC BUG (#1669): the committed spec is generated from
-# `.standard_errors(openapi)` in analytics `api/mod.rs`, which stamps a UNIFORM
-# {400,401,403,404,409,429,500} on EVERY route regardless of what its handler
-# can actually produce. So the committed spec over-declares — and until the Rust
-# registrations are corrected to per-route declarations (a product change owned
-# by the backend devs, intentionally NOT in this test-only PR), the gate has to
-# subtract the boilerplate codes each route cannot answer, or it would require
-# statuses the API never returns.
-#
-# `UNIVERSAL_BOILERPLATE` — declared on every route by the boilerplate but the
-# service never emits them in this deployment: 401 (gateway auth is disabled)
-# and 429 (there is no rate limiter). Subtracted from every route.
+# The committed spec is generated from `.standard_errors(openapi)`, which stamps a
+# uniform {400,401,403,404,409,429,500} on every route regardless of what the
+# handler can answer (spec-fidelity bug #1669). The gate subtracts the codes a
+# route provably cannot produce, or it would require statuses the API never
+# returns. UNIVERSAL_BOILERPLATE drops from every route: 401 (auth disabled at the
+# gateway) and 429 (no rate limiter).
 UNIVERSAL_BOILERPLATE = frozenset({401, 429})
 
-# Per-route declared codes the suite cannot observe, subtracted from `required`
-# (on top of UNIVERSAL_BOILERPLATE). Two reason classes, tagged per entry:
-#   • BOILERPLATE — `.standard_errors` declares 403/404/409/400 on routes that
-#     cannot answer them (403 only on admin writes via lock/cross-tenant; 409
-#     only on admin-create; 404 only on {id}/lookup routes; 400 only where input
-#     is validated). Symptom of the SPEC BUG above (#1669).
-#   • RIG/PRODUCT (real, tracked) — #1663: legacy-threshold success codes 500 on
-#     read-back; #1664: admin duplicate-create 500s instead of 409. (persons
-#     200/404 used to sit here — no Identity backend — now covered via the rig's
-#     in-process Identity stub, #1691.)
-# Self-actualizing: an entry that becomes observed (spec fixed → real code lands,
-# or backend/bug fixed) or leaves the spec fails the gate → forces cleanup.
+# Per-route declared codes the rig cannot observe, subtracted from `required` on
+# top of UNIVERSAL_BOILERPLATE — tagged per entry: `.standard_errors` boilerplate
+# the handler can't answer (#1669), or a pinned rig/product bug (#1663 legacy-
+# threshold reads 500; #1664 admin duplicate-create 500s not 409). Self-cleaning:
+# an entry that becomes observed or leaves the spec fails the hygiene advisory.
 BLOCKED: dict[str, frozenset[int]] = {
     "GET /v1/metrics": frozenset({400, 403, 404, 409}),  # boilerplate: list, no input/lookup/conflict
     "POST /v1/metrics": frozenset({403, 404, 409}),  # boilerplate
@@ -110,22 +65,16 @@ BLOCKED: dict[str, frozenset[int]] = {
     "GET /v1/admin/metric-thresholds/{id}": frozenset({403, 409}),  # boilerplate
     "PUT /v1/admin/metric-thresholds/{id}": frozenset({409}),  # boilerplate (403 IS reachable: cross-tenant)
     "DELETE /v1/admin/metric-thresholds/{id}": frozenset({409}),  # boilerplate (403 reachable: cross-tenant)
-    # legacy thresholds: 403/409 boilerplate + #1663 success code (500 on read-back)
+    # legacy thresholds: 403/409 boilerplate; the success code is #1663 (500 on read-back)
     "GET /v1/metrics/{id}/thresholds": frozenset({200, 403, 409}),  # 200=#1663
     "POST /v1/metrics/{id}/thresholds": frozenset({201, 403, 409}),  # 201=#1663
     "PUT /v1/metrics/{id}/thresholds/{tid}": frozenset({200, 403, 409}),  # 200=#1663
     "DELETE /v1/metrics/{id}/thresholds/{tid}": frozenset({204, 403, 409}),  # 204=#1663
-    # admin create: 404 boilerplate (unknown metric → 400, not 404) + 409=#1664
-    "POST /v1/admin/metric-thresholds": frozenset({404, 409}),
-    # persons: 400/403/409 boilerplate. 200/404 are covered — the rig wires an
-    # in-process Identity stub (lib.identity_stub), so a seeded email resolves
-    # (200) and an unknown one 404s (test_persons.py). See #1691.
+    "POST /v1/admin/metric-thresholds": frozenset({404, 409}),  # 404 boilerplate; 409=#1664
+    # persons 200/404 covered via the in-process Identity stub (#1691); rest boilerplate
     "GET /v1/persons/{email}": frozenset({400, 403, 409}),
-    # metric-results (unified compute): 403/404/409 boilerplate — no authz/lookup/
-    # conflict path (an unknown metric_key is a 400 via `unavailable`, not a 404).
-    # 200/400 are coverable; the 200 happy-path needs seeded unified-metric
-    # observation data (a follow-up), so it reports as a `✗` gap until then.
-    "POST /v1/metric-results": frozenset({403, 404, 409}),  # boilerplate (#1669)
+    # 403/404/409 boilerplate; the 200 happy-path needs seeded observation data (a `✗` gap)
+    "POST /v1/metric-results": frozenset({403, 404, 409}),
 }
 
 

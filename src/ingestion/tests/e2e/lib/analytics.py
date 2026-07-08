@@ -134,10 +134,9 @@ class AnalyticsProcess:
         self.cfg = cfg
         self.binary = binary
         self.port = port
-        # Identity service base URL. Empty (default) leaves the config default
-        # empty, so GET /v1/persons/{email} 500s ("identity not configured");
-        # the rig passes the in-process stub's URL (lib.identity_stub) here so the
-        # persons endpoint resolves and exercises its real 200/404 contract (#1691).
+        # Identity base URL for GET /v1/persons/{email}. Empty → the handler 500s
+        # ("identity not configured"); the rig passes the in-process stub's URL so
+        # the endpoint exercises its real 200/404 contract (#1691).
         self.identity_url = identity_url
         # In docker mode the pytest process and the binary live in the same
         # container, so localhost is the same loopback either way.
@@ -181,15 +180,11 @@ class AnalyticsProcess:
                 # `InsightTenantId IN [tenant, nil]`, so this need not match the
                 # seeded bronze tenant.
                 "APP__gears__analytics__config__metric_catalog__tenant_default_id": "00000000-0000-0000-0000-000000000001",
-                # No redis_url — leave config default (empty). identity_url is set
-                # below only when the rig wires an Identity backend (the stub).
+                # No redis_url — leave config default (empty).
                 "RUST_LOG": env.get("RUST_LOG", "info"),
             },
         )
-        # Identity resolution for GET /v1/persons/{email}. When unset the config
-        # default stays empty and the handler returns 500 ("not configured");
-        # the rig's in-process stub (lib.identity_stub) provides a URL so the
-        # endpoint resolves and covers both its 200 (found) and 404 paths (#1691).
+        # Only override identity_url when the rig wired a stub (see __init__).
         if self.identity_url:
             env["APP__gears__analytics__config__identity_url"] = self.identity_url
         # Stream the binary's stdout+stderr to a temp file rather than a PIPE so

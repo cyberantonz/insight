@@ -39,12 +39,10 @@ def scratch_metric(api) -> dict:
 def scratch_threshold(api, scratch_metric: dict) -> dict:
     """A threshold (`ge 1.0 good`) on the scratch metric; removed in teardown.
 
-    KNOWN BUG #1663: thresholds.value is DECIMAL(20,6) but the entity reads
-    f64 — the create's read-back (and every later read) 500s, so this fixture
-    xfails its dependents until the fix lands. When #1663 is fixed this xfail
-    stops firing, the dependent tests run for real, and the temporary
-    EXPECTED_STATUS overrides in lib/api_coverage.py fail the endpoint gate as
-    redundant — forcing this scaffolding to be removed.
+    #1663 xfail: the create's read-back 500s (DECIMAL value vs f64 entity), so
+    this fixture xfails its dependents until the fix lands — at which point the
+    xfail stops firing and the newly-observed success code trips BLOCKED's
+    now-observed hygiene in lib/api_coverage.py, forcing this scaffolding out.
     """
     r = api.post(
         f"/v1/metrics/{scratch_metric['id']}/thresholds",

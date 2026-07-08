@@ -1,24 +1,14 @@
-"""In-process Identity stub for the bronze-to-api e2e rig.
+"""In-process Identity stub for the bronze-to-api e2e rig (#1691).
 
-`GET /v1/persons/{email}` is served by the analytics `get_person` handler, which
-proxies to the Identity service: `IdentityClient::get_person` issues
-`GET {identity_url}/v1/persons/{email}` and maps 404 → 404, a 2xx `Person` body →
-200, anything else → 500 (`src/backend/services/analytics/src/infra/identity`).
+A minimal loopback HTTP backend the analytics `get_person` handler resolves
+against (`GET {identity_url}/v1/persons/{email}`): a canned `Person` for one
+seeded email (→ 200) and 404 for every other. Lets the persons endpoint exercise
+its real 200/404 contract, which is otherwise a no-backend 500.
 
-The rig stands up only analytics + ClickHouse + MariaDB — no Identity service —
-so with `identity_url` empty the handler short-circuits to a canonical 500
-("identity resolution service not configured") and its real 200 (found) / 404
-(not found) contract is never exercised (#1691).
-
-This is a minimal loopback HTTP stub the analytics binary resolves against: it
-returns a canned `Person` for one seeded email (→ 200) and 404 for every other
-email. It deliberately ignores request headers — the analytics client sends NO
-`X-Insight-Person-Id` caller header (in production the api-gateway injects it),
-so the real Identity service would 401 that header-less call and the handler
-would surface a 500, not a 200. Answering purely by email is all the analytics
-persons contract needs to cover both branches, and it keeps this a test-only
-change (a real Identity backend would require an analytics code change to send
-the caller header).
+Answers purely by email and ignores headers on purpose: the analytics client
+sends no caller header (the api-gateway injects it in production), so the REAL
+Identity service would 401 the header-less call → 500. The stub is what keeps
+this a test-only change; a real backend would need an analytics code change.
 """
 
 from __future__ import annotations
