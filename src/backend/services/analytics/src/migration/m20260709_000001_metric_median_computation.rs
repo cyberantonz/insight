@@ -8,8 +8,12 @@
 
 use sea_orm_migration::prelude::*;
 
-const DROP_CHECK: &str =
-    "ALTER TABLE metric_definitions DROP CONSTRAINT chk_metric_definitions_computation_fields";
+// IF EXISTS makes this idempotent forward-repair: a warm cluster whose
+// constraint was already dropped (incident recovery, or a MariaDB that
+// parsed but never persisted it) must still reach the enum widen rather than
+// abort the migration and refuse to start.
+const DROP_CHECK: &str = "ALTER TABLE metric_definitions \
+     DROP CONSTRAINT IF EXISTS chk_metric_definitions_computation_fields";
 
 const EXTEND_ENUM: &str = "ALTER TABLE metric_definitions \
      MODIFY COLUMN computation_type ENUM('sum','ratio','median') NOT NULL";

@@ -51,7 +51,10 @@ commits_source AS (
         project_key,
         repo_slug,
         commit_hash,
-        lower(author_email) AS entity_id,
+        -- Match the API's entity-id normalization exactly (trim + lower):
+        -- observations keyed on an untrimmed id would never be matched by a
+        -- request the frontend normalizes.
+        lower(trimBoth(author_email)) AS entity_id,
         toDate(date) AS metric_date,
         lines_added,
         lines_removed,
@@ -67,7 +70,7 @@ commits_source AS (
             AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS source_dimensions
     FROM {{ ref('class_git_commits') }} FINAL
-    WHERE author_email != ''
+    WHERE trimBoth(author_email) != ''
       AND date IS NOT NULL
       AND is_merge_commit = 0
     LIMIT 1 BY tenant_id, data_source, commit_hash
@@ -112,9 +115,11 @@ pr_commit_emails AS (
             links.project_key AS project_key,
             links.repo_slug AS repo_slug,
             links.pr_id AS pr_id,
-            lower(commits.author_email) AS email,
-            count() AS email_count,
-            max(count()) OVER (
+            lower(trimBoth(commits.author_email)) AS email,
+            -- Vote by distinct linked commits, not join rows: a hash present
+            -- in more than one repo of the source must not double-count.
+            uniqExact(commits.commit_hash) AS email_count,
+            max(uniqExact(commits.commit_hash)) OVER (
                 PARTITION BY links.tenant_id, links.source_id,
                              links.project_key, links.repo_slug, links.pr_id
             ) AS max_count
@@ -125,7 +130,10 @@ pr_commit_emails AS (
             AND commits.project_key = links.project_key
             AND commits.repo_slug = links.repo_slug
             AND commits.commit_hash = links.commit_hash
-        WHERE commits.author_email != ''
+        -- Non-merge authorship only, matching the commit observations; a merge
+        -- commit's author should not vote in the PR's identity election.
+        WHERE trimBoth(commits.author_email) != ''
+          AND commits.is_merge_commit = 0
         GROUP BY tenant_id, source_id, project_key, repo_slug, pr_id, email
     )
     WHERE email_count = max_count
@@ -135,7 +143,7 @@ pull_requests_source AS (
     SELECT
         prs.tenant_id AS tenant_id,
         multiIf(
-            prs.author_email != '', lower(prs.author_email),
+            trimBoth(prs.author_email) != '', lower(trimBoth(prs.author_email)),
             pr_commit_emails.email IS NOT NULL AND pr_commit_emails.email != '', pr_commit_emails.email,
             bridge.email IS NOT NULL AND bridge.email != '', bridge.email,
             CAST(NULL AS Nullable(String))
@@ -181,6 +189,7 @@ prs_created_source AS (
         tenant_id,
         assumeNotNull(entity_id) AS entity_id,
         toDate(created_on) AS metric_date,
+        state,
         change_size,
         source_dimensions
     FROM pull_requests_source
@@ -223,6 +232,13 @@ measure_observations AS (
     UNION ALL
 
     {{ sum_measure('pr_created', 'prs_created_source', '1', 'source_dimensions') }}
+
+    UNION ALL
+
+    -- Merge-rate numerator: PRs *created* in the period that have merged,
+    -- dated at creation so numerator and denominator share the created-cohort.
+    -- (pr_merged below is merge-dated throughput for the standalone metric.)
+    {{ sum_measure('pr_created_merged', 'prs_created_source', '1', 'source_dimensions', where="state = 'MERGED'") }}
 
     UNION ALL
 

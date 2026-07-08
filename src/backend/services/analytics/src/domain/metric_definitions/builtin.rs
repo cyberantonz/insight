@@ -121,6 +121,7 @@ pub const BUILTIN_SOURCES: &[BuiltinSource] = &[
             "code_lines_added",
             "lines_added",
             "pr_created",
+            "pr_created_merged",
             "pr_merged",
             "pr_cycle_hours",
             "pr_change_size",
@@ -426,9 +427,9 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         metric_key: "git.merge_rate",
         source_key: "git",
         label: "PR merge rate",
-        description: Some("Merged divided by created pull requests"),
+        description: Some("Share of created pull requests that merged"),
         explanation: Some(
-            "Pull requests merged divided by pull requests created in the period. Requests opened near the end of the period may not have merged yet, which lowers the rate at period edges.",
+            "Of the pull requests created in the period, the share that have merged. Requests opened near the end of the period may not have merged yet, which lowers the rate at period edges.",
         ),
         unit: Some("percent"),
         format: MetricFormat::Percent,
@@ -439,7 +440,7 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         inputs: &[
             InputSeed {
                 input_role: MetricInputRole::Numerator,
-                measure_key: "pr_merged",
+                measure_key: "pr_created_merged",
             },
             InputSeed {
                 input_role: MetricInputRole::Denominator,
