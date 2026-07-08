@@ -96,12 +96,18 @@ The computation vocabulary is closed and fully executable:
 ```text
 sum
 ratio
+median
 ```
 
 Semantics:
 
 - `sum`: sum one numeric measure.
 - `ratio`: aggregate numerator and denominator measures first, then divide.
+- `median`: exact middle (`quantileExact(0.5)`) of per-event observation
+  values. No `scale`. Median measures emit one row per source event via the
+  `event_measure` shape macro; multiple rows per (entity, day, measure) are
+  the intended grain. A median over no rows is NULL — medians are never
+  zero-filled.
 
 Ratios use:
 
@@ -114,8 +120,14 @@ They are not averages of row-level ratios.
 Ratio numerator and denominator inputs must resolve to measures of the same
 source. Cross-source ratios are a configuration error.
 
+Row granularity is a property of the measure's shape macro: `sum_measure`
+and `presence_measure` emit day-aggregated rows; `event_measure` emits one
+row per source event for median inputs. Binding an event-grain measure to a
+`sum` metric (or vice versa) is a configuration error in the registry
+review, not detectable at runtime.
+
 Extending the vocabulary (anticipated kinds: count-distinct over
-`subject_key`, distribution statistics, point-in-time gauges over
+`subject_key`, further distribution statistics, point-in-time gauges over
 `observed_at`, derived expressions over other metrics) is one coordinated
 change: a `ComputationSpec` variant, a compiler arm, the `computation_type`
 DB enum, a shape macro if the observation shape is new, and the response
@@ -222,6 +234,7 @@ type MetricResultsRequest = {
       | { view: "peer"; cohort_key?: string }
       | { view: "timeseries"; bucket?: "day" | "week" | "month"; dimensions?: string[] }
       | { view: "breakdown"; dimensions: string[] }
+      | { view: "histogram" }
     >
   }>
 }
@@ -242,11 +255,18 @@ type MetricResult = {
 } & (
   | { computation: "sum" }
   | { computation: "ratio"; scale: number }
+  | { computation: "median" }
 )
 ```
 
 The computation tag and its fields are flattened into the result object; a
 serde wire-shape test in `metric_results/builder.rs` pins this layout.
+
+The histogram view shape:
+
+```ts
+{ view: "histogram"; values: Array<{ entity_id: string; bins: Array<{ lo: number; hi: number; count: number }> }> }
+```
 
 View values use `entity_id`, not person-specific fields.
 
@@ -266,6 +286,14 @@ Execution rules:
 
 - `sum` no rows returns `0`.
 - `ratio` missing or zero denominator returns `null`.
+- `median` no rows returns `null` — medians are never zero-filled.
+- Histograms are valid only for `median` metrics: they bin per-event
+  observation values into 10 server-owned fixed-width bins over the
+  entity's own exact `[min, max]`; the last bin is closed at the maximum,
+  all-identical values collapse to a single `[v, v]` bin, and an entity
+  with no events is listed with an empty `bins` array. Binning is
+  deterministic arithmetic over exact aggregates — never the adaptive
+  `histogram()` aggregate.
 - Ungrouped timeseries are dense per requested entity and bucket.
 - Dimensioned timeseries are dense per requested entity, observed dimension group, and bucket.
 - Rows missing a requested dimension group under value `__unknown__` with
@@ -313,7 +341,9 @@ Reject with a client error when:
 - a requested dimension is empty, duplicated, or not declared for the metric.
 - a breakdown has no dimensions.
 - a peer view has no requested or default cohort key.
-- projected or final result size exceeds the row cap.
+- a histogram view targets a non-median metric.
+- projected or final result size exceeds the row cap (histogram views
+  project `entities × 10` rows).
 
 ## Authorization
 
@@ -379,8 +409,10 @@ The source exists but does not emit the measure yet.
    `src/ingestion/dbt/macros/metric_observation_measures.sql` —
    `sum_measure(measure_key, relation, value_expr, dimensions_col,
    where=none)` for aggregated numerics, `presence_measure(measure_key,
-   relations)` for row-existence markers. Every branch is a shape-macro call;
-   a new macro is added only when a new computation kind becomes executable.
+   relations)` for row-existence markers, `event_measure(measure_key,
+   relation, value_expr, dimensions_col, where=none)` for per-event values
+   feeding median metrics. Every branch is a shape-macro call; a new macro
+   is added only when a new computation kind becomes executable.
    Read only class-contract columns; never vendor-specific ones — if the fact
    you need is not in the class contract, extend the class contract first
    (staging models declare semantics, see the class `schema.yml`).

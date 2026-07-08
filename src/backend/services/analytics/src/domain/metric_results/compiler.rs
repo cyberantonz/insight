@@ -3,7 +3,9 @@ use std::fmt::Write;
 
 use serde::Deserialize;
 
-use super::validation::{ValidatedMetricResultsRequest, ValidatedMetricView, query_row_limit};
+use super::validation::{
+    HISTOGRAM_BINS, ValidatedMetricResultsRequest, ValidatedMetricView, query_row_limit,
+};
 use super::view::Bucket;
 use crate::domain::metric_definitions::{
     CohortSource, ComputationSpec, MetricDefinition, ObservationRelation,
@@ -62,6 +64,19 @@ pub struct BreakdownQueryRow {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+/// One observed (entity, bin) pair plus the entity's exact value bounds.
+/// The SQL owns bin membership only; the builder derives all bin edges from
+/// the bounds so displayed edges of empty and observed bins cannot drift.
+#[derive(Debug, Deserialize)]
+pub struct HistogramQueryRow {
+    pub entity_id: String,
+    pub bin_idx: u32,
+    pub entity_lo: f64,
+    pub entity_hi: f64,
+    #[serde(default, deserialize_with = "optional_u64")]
+    pub bin_count: Option<u64>,
+}
+
 pub fn compile_view_query(
     def: &MetricDefinition,
     req: &ValidatedMetricResultsRequest,
@@ -76,6 +91,7 @@ pub fn compile_view_query(
         ValidatedMetricView::Breakdown { dimensions } => {
             compile_breakdown_query(def, req, dimensions)
         }
+        ValidatedMetricView::Histogram => compile_histogram_query(def, req),
     }
 }
 
@@ -115,6 +131,19 @@ fn compile_period_query(
             LIMIT {limit}
             ",
             scale = scale,
+            metric_where = metric_where(def),
+        ),
+        ComputationSpec::Median { .. } => format!(
+            r"
+            SELECT
+                entity_id,
+                quantileExactIf(0.5)(value, value IS NOT NULL) AS value
+            FROM {observation_table}
+            WHERE {metric_where}
+              AND entity_id IN ({entities})
+            GROUP BY entity_id
+            LIMIT {limit}
+            ",
             metric_where = metric_where(def),
         ),
     };
@@ -172,6 +201,21 @@ fn compile_timeseries_query(
             metric_where = metric_where(def),
             scale = scale,
         ),
+        ComputationSpec::Median { .. } => format!(
+            r"
+            SELECT
+                entity_id,
+                toString({bucket}) AS bucket_start{dim_select},
+                quantileExactIf(0.5)(value, value IS NOT NULL) AS value
+            FROM {observation_table}
+            WHERE {metric_where}
+              AND entity_id IN ({entities})
+            GROUP BY {group}
+            ORDER BY entity_id, bucket_start
+            LIMIT {limit}
+            ",
+            metric_where = metric_where(def),
+        ),
     };
     CompiledQuery { sql, params }
 }
@@ -223,6 +267,20 @@ fn compile_breakdown_query(
             metric_where = metric_where(def),
             scale = scale,
         ),
+        ComputationSpec::Median { .. } => format!(
+            r"
+            SELECT
+                entity_id{dim_select},
+                quantileExactIf(0.5)(value, value IS NOT NULL) AS value
+            FROM {observation_table}
+            WHERE {metric_where}
+              AND entity_id IN ({entities})
+            GROUP BY {group}
+            ORDER BY entity_id
+            LIMIT {limit}
+            ",
+            metric_where = metric_where(def),
+        ),
     };
     CompiledQuery { sql, params }
 }
@@ -248,6 +306,11 @@ fn compile_peer_query(
         ComputationSpec::Ratio { scale, .. } => format!(
             "{scale} * sumIf(value, measure_key = ? AND value IS NOT NULL) / nullIf(sumIf(value, measure_key = ? AND value IS NOT NULL), 0)"
         ),
+        // Per-entity median over per-event rows; percentile-of-target
+        // machinery below is aggregate-agnostic.
+        ComputationSpec::Median { .. } => {
+            "quantileExactIf(0.5)(value, value IS NOT NULL)".to_owned()
+        }
     };
     let limit = query_row_limit();
     let sql = format!(
@@ -321,6 +384,68 @@ fn compile_peer_query(
     CompiledQuery { sql, params }
 }
 
+// Deterministic fixed-width binning over each entity's exact [min, max]:
+// pure arithmetic over exact aggregates, so identical data always yields
+// identical bins (the adaptive `histogram()` aggregate is merge-order
+// dependent and returns fractional heights). `least(max_bin, …)` closes the
+// last bin at the maximum; a degenerate range (all values identical) maps
+// everything to bin 0, which the builder renders as one [v, v] bin.
+// Validation guarantees the metric is a median (single-measure predicate),
+// so `metric_where`/`metric_params` fit unchanged.
+fn compile_histogram_query(
+    def: &MetricDefinition,
+    req: &ValidatedMetricResultsRequest,
+) -> CompiledQuery {
+    let mut params = metric_params(def, req);
+    params.extend(req.entity_ids.iter().cloned());
+    let entities = placeholders(req.entity_ids.len());
+    let observation_table = observation_table(def.observation_relation());
+    let bins = HISTOGRAM_BINS;
+    let max_bin = HISTOGRAM_BINS - 1;
+    let limit = query_row_limit();
+    let sql = format!(
+        r"
+        WITH
+        events AS (
+            SELECT
+                entity_id,
+                assumeNotNull(value) AS value
+            FROM {observation_table}
+            WHERE {metric_where}
+              AND entity_id IN ({entities})
+              AND value IS NOT NULL
+        ),
+        bounds AS (
+            SELECT
+                entity_id,
+                min(value) AS entity_lo,
+                max(value) AS entity_hi
+            FROM events
+            GROUP BY entity_id
+        )
+        SELECT
+            events.entity_id AS entity_id,
+            if(
+                bounds.entity_hi = bounds.entity_lo,
+                0,
+                toUInt32(least({max_bin}, toInt64(floor(
+                    (events.value - bounds.entity_lo) * {bins} / (bounds.entity_hi - bounds.entity_lo)
+                ))))
+            ) AS bin_idx,
+            any(bounds.entity_lo) AS entity_lo,
+            any(bounds.entity_hi) AS entity_hi,
+            toUInt64(count()) AS bin_count
+        FROM events
+        INNER JOIN bounds ON bounds.entity_id = events.entity_id
+        GROUP BY entity_id, bin_idx
+        ORDER BY entity_id, bin_idx
+        LIMIT {limit}
+        ",
+        metric_where = metric_where(def),
+    );
+    CompiledQuery { sql, params }
+}
+
 // No tenant_id predicate: warehouse tenant isolation is not implemented
 // platform-wide (the legacy query engine also queries without it), and the
 // control-plane tenant UUID has no defined mapping to the warehouse
@@ -329,7 +454,7 @@ fn compile_peer_query(
 // place once the platform defines that mapping.
 fn metric_where(def: &MetricDefinition) -> &'static str {
     match &def.spec {
-        ComputationSpec::Sum { .. } => {
+        ComputationSpec::Sum { .. } | ComputationSpec::Median { .. } => {
             "source_key = ? AND entity_type = ? AND metric_date >= toDate(?) AND metric_date <= toDate(?) AND measure_key = ?"
         }
         ComputationSpec::Ratio { .. } => {
@@ -340,7 +465,7 @@ fn metric_where(def: &MetricDefinition) -> &'static str {
 
 fn metric_params(def: &MetricDefinition, req: &ValidatedMetricResultsRequest) -> Vec<String> {
     match &def.spec {
-        ComputationSpec::Sum { value } => vec![
+        ComputationSpec::Sum { value } | ComputationSpec::Median { value } => vec![
             value.source_key.clone(),
             req.entity_type.clone(),
             req.from.to_string(),
@@ -516,6 +641,15 @@ mod tests {
         }
     }
 
+    fn median_metric() -> MetricDefinition {
+        MetricDefinition {
+            base: base(vec!["tool"]),
+            spec: ComputationSpec::Median {
+                value: input(MetricInputRole::Value, "pr_cycle_hours"),
+            },
+        }
+    }
+
     fn request() -> ValidatedMetricResultsRequest {
         ValidatedMetricResultsRequest {
             entity_type: "person".to_owned(),
@@ -564,6 +698,116 @@ mod tests {
                 "2026-01-31",
                 "accepted_edit_actions",
                 "tool_use_offered",
+                "a@x.io",
+                "b@x.io",
+            ]
+        );
+    }
+
+    #[test]
+    fn median_period_query_matches_sum_param_layout() {
+        let query = compile_view_query(&median_metric(), &request(), &ValidatedMetricView::Period);
+        assert!(
+            query
+                .sql
+                .contains("quantileExactIf(0.5)(value, value IS NOT NULL) AS value")
+        );
+        assert!(query.sql.contains("measure_key = ?"));
+        assert!(query.sql.contains("GROUP BY entity_id"));
+        assert_eq!(
+            query.params,
+            vec![
+                "ai_usage",
+                "person",
+                "2026-01-01",
+                "2026-01-31",
+                "pr_cycle_hours",
+                "a@x.io",
+                "b@x.io",
+            ]
+        );
+    }
+
+    #[test]
+    fn median_bucketed_views_aggregate_per_group() {
+        let timeseries = compile_view_query(
+            &median_metric(),
+            &request(),
+            &ValidatedMetricView::Timeseries {
+                bucket: Bucket::Week,
+                dimensions: vec![],
+            },
+        );
+        assert!(timeseries.sql.contains("quantileExactIf(0.5)"));
+        assert!(timeseries.sql.contains("GROUP BY entity_id, bucket_start"));
+
+        let breakdown = compile_view_query(
+            &median_metric(),
+            &request(),
+            &ValidatedMetricView::Breakdown {
+                dimensions: vec!["tool".to_owned()],
+            },
+        );
+        assert!(breakdown.sql.contains("quantileExactIf(0.5)"));
+        assert!(
+            breakdown
+                .sql
+                .contains("GROUP BY entity_id, dim_0_value, dim_0_label")
+        );
+    }
+
+    #[test]
+    fn median_peer_query_reuses_percentile_machinery() {
+        let sum = compile_view_query(
+            &sum_metric(),
+            &request(),
+            &ValidatedMetricView::Peer {
+                cohort_key: "org_unit".to_owned(),
+            },
+        );
+        let median = compile_view_query(
+            &median_metric(),
+            &request(),
+            &ValidatedMetricView::Peer {
+                cohort_key: "org_unit".to_owned(),
+            },
+        );
+        // Same CTE skeleton, only the per-entity aggregate differs.
+        assert!(
+            median
+                .sql
+                .contains("quantileExactIf(0.5)(value, value IS NOT NULL) AS value")
+        );
+        assert_eq!(
+            sum.sql.replace("sumIf(value, value IS NOT NULL)", "<agg>"),
+            median
+                .sql
+                .replace("quantileExactIf(0.5)(value, value IS NOT NULL)", "<agg>"),
+        );
+    }
+
+    #[test]
+    fn histogram_query_bins_deterministically_from_entity_bounds() {
+        let query =
+            compile_view_query(&median_metric(), &request(), &ValidatedMetricView::Histogram);
+        assert!(query.sql.contains("min(value) AS entity_lo"));
+        assert!(query.sql.contains("max(value) AS entity_hi"));
+        assert!(query.sql.contains("least(9,"));
+        assert!(query.sql.contains("* 10 /"));
+        assert!(query.sql.contains("GROUP BY entity_id, bin_idx"));
+        // Degenerate range (all values identical) maps to bin 0, no division.
+        assert!(query.sql.contains("bounds.entity_hi = bounds.entity_lo"));
+        // Deterministic arithmetic only — never the adaptive aggregate.
+        assert!(!query.sql.contains("histogram("));
+        assert!(query.sql.contains(&format!("LIMIT {}", query_row_limit())));
+        assert_eq!(
+            query.params,
+            vec![
+                "ai_usage",
+                "person",
+                "2026-01-01",
+                "2026-01-31",
+                "pr_cycle_hours",
                 "a@x.io",
                 "b@x.io",
             ]
@@ -653,7 +897,7 @@ mod tests {
         // values stay NULL and drop out of the peer pool — absence of rows
         // cannot be distinguished from "not covered by the source", so the
         // peer query must not invent zeros for them.
-        for def in [sum_metric(), ratio_metric()] {
+        for def in [sum_metric(), ratio_metric(), median_metric()] {
             let query = compile_view_query(
                 &def,
                 &request(),
@@ -668,7 +912,7 @@ mod tests {
 
     #[test]
     fn peer_queries_suppress_percentiles_below_min_pool_size() {
-        for def in [sum_metric(), ratio_metric()] {
+        for def in [sum_metric(), ratio_metric(), median_metric()] {
             let query = compile_view_query(
                 &def,
                 &request(),

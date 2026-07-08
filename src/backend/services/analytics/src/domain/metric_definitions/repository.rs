@@ -451,6 +451,9 @@ fn build_definition(
                 scale,
             }
         }
+        MetricComputation::Median => ComputationSpec::Median {
+            value: one_input(&row.metric_key, inputs, MetricInputRole::Value)?,
+        },
     };
 
     Ok(MetricDefinition { base, spec })

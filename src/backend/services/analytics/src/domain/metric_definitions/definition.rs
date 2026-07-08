@@ -22,6 +22,7 @@ pub enum MetricFormat {
 pub enum MetricComputation {
     Sum,
     Ratio,
+    Median,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -99,6 +100,12 @@ pub enum ComputationSpec {
         denominator: MetricInput,
         scale: f64,
     },
+    /// Exact middle of per-event observation values. Median measures emit
+    /// one row per source event (multiple rows per entity/day are the
+    /// intended shape), so the aggregate is over events, not day totals.
+    Median {
+        value: MetricInput,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,13 +129,17 @@ impl MetricDefinition {
             .find(|d| *d == dimension)
     }
 
+    // Only sums zero-fill: an absent entity genuinely summed to nothing.
+    // Ratios and medians of no observations are unknowable, not zero.
     pub fn is_zero_filled(&self) -> bool {
         matches!(self.spec, ComputationSpec::Sum { .. })
     }
 
     pub fn observation_relation(&self) -> &ObservationRelation {
         match &self.spec {
-            ComputationSpec::Sum { value } => &value.observation_relation,
+            ComputationSpec::Sum { value } | ComputationSpec::Median { value } => {
+                &value.observation_relation
+            }
             ComputationSpec::Ratio { numerator, .. } => &numerator.observation_relation,
         }
     }
@@ -215,6 +226,7 @@ impl MetricComputation {
         match self {
             Self::Sum => "sum",
             Self::Ratio => "ratio",
+            Self::Median => "median",
         }
     }
 
@@ -222,6 +234,7 @@ impl MetricComputation {
         match value {
             "sum" => Some(Self::Sum),
             "ratio" => Some(Self::Ratio),
+            "median" => Some(Self::Median),
             _ => None,
         }
     }
@@ -296,7 +309,11 @@ mod tests {
         ] {
             assert_eq!(MetricDirection::from_db(direction.as_db()), Some(direction));
         }
-        for computation in [MetricComputation::Sum, MetricComputation::Ratio] {
+        for computation in [
+            MetricComputation::Sum,
+            MetricComputation::Ratio,
+            MetricComputation::Median,
+        ] {
             assert_eq!(
                 MetricComputation::from_db(computation.as_db()),
                 Some(computation)

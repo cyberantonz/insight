@@ -11,11 +11,11 @@ use super::AppState;
 use super::error::MetricError;
 use crate::domain::metric_definitions::MetricDefinition;
 use crate::domain::metric_results::{
-    BreakdownQueryRow, CompiledQuery, MetricResultViewDto, MetricResultsRequest,
+    BreakdownQueryRow, CompiledQuery, HistogramQueryRow, MetricResultViewDto, MetricResultsRequest,
     MetricResultsResponse, PeerQueryRow, PeriodQueryRow, TimeseriesQueryRow,
-    ValidatedMetricResultsRequest, ValidatedMetricView, build_breakdown_view, build_metric_result,
-    build_peer_view, build_period_view, build_timeseries_view, compile_view_query,
-    enforce_row_limit, validate_request,
+    ValidatedMetricResultsRequest, ValidatedMetricView, build_breakdown_view, build_histogram_view,
+    build_metric_result, build_peer_view, build_period_view, build_timeseries_view,
+    compile_view_query, enforce_row_limit, validate_request,
 };
 use toolkit_security::SecurityContext;
 
@@ -130,6 +130,10 @@ async fn execute_task(
         ValidatedMetricView::Breakdown { dimensions } => {
             let rows = fetch_rows::<BreakdownQueryRow>(state, query).await?;
             build_breakdown_view(&dimensions, rows)?
+        }
+        ValidatedMetricView::Histogram => {
+            let rows = fetch_rows::<HistogramQueryRow>(state, query).await?;
+            build_histogram_view(req, rows)
         }
     };
 

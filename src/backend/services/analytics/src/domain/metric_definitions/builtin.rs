@@ -32,6 +32,7 @@ impl CohortKey {
 pub enum SeedComputation {
     Sum,
     Ratio { scale: f64 },
+    Median,
 }
 
 impl SeedComputation {
@@ -39,12 +40,13 @@ impl SeedComputation {
         match self {
             Self::Sum => MetricComputation::Sum,
             Self::Ratio { .. } => MetricComputation::Ratio,
+            Self::Median => MetricComputation::Median,
         }
     }
 
     pub fn scale(self) -> Option<f64> {
         match self {
-            Self::Sum => None,
+            Self::Sum | Self::Median => None,
             Self::Ratio { scale } => Some(scale),
         }
     }
@@ -439,6 +441,22 @@ mod tests {
             );
             assert!(
                 has_role(MetricInputRole::Denominator),
+                "{}",
+                metric.metric_key
+            );
+        }
+    }
+
+    #[test]
+    fn median_metrics_have_single_value_role() {
+        for metric in BUILTIN_METRICS {
+            if metric.computation != SeedComputation::Median {
+                continue;
+            }
+            assert_eq!(metric.inputs.len(), 1, "{}", metric.metric_key);
+            assert_eq!(
+                metric.inputs[0].input_role,
+                MetricInputRole::Value,
                 "{}",
                 metric.metric_key
             );
