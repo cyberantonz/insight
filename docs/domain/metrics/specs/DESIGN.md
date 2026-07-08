@@ -69,6 +69,15 @@ compilation, and runtime schema validation against these relations. Column
 changes are coordinated changes: dbt model + `schema.yml` + backend
 `OBSERVATION_COLUMNS`/`COHORT_COLUMNS` + this document.
 
+Observation relation names are data, not code: `metric_sources.source_ref`
+stores the relation name, constrained to the `<family>_metric_observations`
+naming shape (lowercase `snake_case`, `insight` database) and parsed on
+every load. A relation becomes queryable only after the schema validator
+probes its columns against `OBSERVATION_COLUMNS`. Adding an observation
+source is therefore a dbt gold model plus registry seed rows — no backend
+enum or table-name code change. All observation relations share one column
+contract; a source that needs different columns is a different source kind.
+
 Gold models are built at deploy time by the ClickHouse migrate hook
 (`dbt run --select tag:gold`, final step of
 `src/ingestion/scripts/apply-ch-migrations.sh`), so the views exist before

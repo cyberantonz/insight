@@ -233,7 +233,7 @@ mod tests {
     use serde_json::json;
 
     use crate::domain::metric_definitions::definition::{
-        MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole, ObservationSource,
+        MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole, ObservationRelation,
     };
     use crate::domain::metric_results::view::Bucket;
 
@@ -255,7 +255,8 @@ mod tests {
     fn input(role: MetricInputRole, measure_key: &str) -> MetricInput {
         MetricInput {
             role,
-            observation_source: ObservationSource::AiMetricObservations,
+            observation_relation: ObservationRelation::parse("ai_metric_observations")
+                .unwrap_or_else(|| panic!("fixture relation must parse")),
             source_key: "ai_usage".to_owned(),
             measure_key: measure_key.to_owned(),
         }

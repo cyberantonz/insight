@@ -6,7 +6,7 @@ use serde::Deserialize;
 use super::validation::{ValidatedMetricResultsRequest, ValidatedMetricView, query_row_limit};
 use super::view::Bucket;
 use crate::domain::metric_definitions::{
-    CohortSource, ComputationSpec, MetricDefinition, ObservationSource,
+    CohortSource, ComputationSpec, MetricDefinition, ObservationRelation,
 };
 
 pub(crate) const UNKNOWN_DIMENSION_VALUE: &str = "__unknown__";
@@ -86,7 +86,7 @@ fn compile_period_query(
     let mut params = metric_params(def, req);
     params.extend(req.entity_ids.iter().cloned());
     let entities = placeholders(req.entity_ids.len());
-    let observation_table = observation_table(def.observation_source());
+    let observation_table = observation_table(def.observation_relation());
     let limit = query_row_limit();
     let sql = match &def.spec {
         ComputationSpec::Sum { .. } => format!(
@@ -137,7 +137,7 @@ fn compile_timeseries_query(
     } else {
         format!("entity_id, bucket_start, {dim_group}")
     };
-    let observation_table = observation_table(def.observation_source());
+    let observation_table = observation_table(def.observation_relation());
     let limit = query_row_limit();
     let sql = match &def.spec {
         ComputationSpec::Sum { .. } => format!(
@@ -190,7 +190,7 @@ fn compile_breakdown_query(
     } else {
         format!("entity_id, {dim_group}")
     };
-    let observation_table = observation_table(def.observation_source());
+    let observation_table = observation_table(def.observation_relation());
     let limit = query_row_limit();
     let sql = match &def.spec {
         ComputationSpec::Sum { .. } => format!(
@@ -241,7 +241,7 @@ fn compile_peer_query(
     params.extend(metric_params(def, req));
 
     let entities = placeholders(req.entity_ids.len());
-    let observation_table = observation_table(def.observation_source());
+    let observation_table = observation_table(def.observation_relation());
     let cohort_table = cohort_table(CohortSource::MetricEntityCohortsCurrent);
     let metric_value = match &def.spec {
         ComputationSpec::Sum { .. } => "sumIf(value, value IS NOT NULL)".to_owned(),
@@ -381,10 +381,9 @@ fn bucket_expr(bucket: Bucket) -> &'static str {
     }
 }
 
-fn observation_table(source: ObservationSource) -> &'static str {
-    match source {
-        ObservationSource::AiMetricObservations => "insight.ai_metric_observations",
-    }
+fn observation_table(relation: &ObservationRelation) -> String {
+    let (database, table) = relation.table_ref();
+    format!("{database}.{table}")
 }
 
 fn cohort_table(source: CohortSource) -> &'static str {
@@ -490,7 +489,8 @@ mod tests {
     fn input(role: MetricInputRole, measure_key: &str) -> MetricInput {
         MetricInput {
             role,
-            observation_source: ObservationSource::AiMetricObservations,
+            observation_relation: ObservationRelation::parse("ai_metric_observations")
+                .unwrap_or_else(|| panic!("fixture relation must parse")),
             source_key: "ai_usage".to_owned(),
             measure_key: measure_key.to_owned(),
         }

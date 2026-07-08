@@ -399,7 +399,7 @@ mod tests {
     use super::*;
     use crate::domain::metric_definitions::definition::{
         ComputationSpec, MetricBase, MetricDefinition, MetricDirection, MetricFormat, MetricInput,
-        MetricInputRole, ObservationSource,
+        MetricInputRole, ObservationRelation,
     };
 
     fn shape_request(
@@ -444,7 +444,8 @@ mod tests {
             spec: ComputationSpec::Sum {
                 value: MetricInput {
                     role: MetricInputRole::Value,
-                    observation_source: ObservationSource::AiMetricObservations,
+                    observation_relation: ObservationRelation::parse("ai_metric_observations")
+                .unwrap_or_else(|| panic!("fixture relation must parse")),
                     source_key: "ai_usage".to_owned(),
                     measure_key: "accepted_lines".to_owned(),
                 },

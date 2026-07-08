@@ -1,6 +1,5 @@
 use crate::domain::metric_definitions::definition::{
-    MetricComputation, MetricDirection, MetricFormat, MetricInputRole, ObservationSource,
-    SourceKind,
+    MetricComputation, MetricDirection, MetricFormat, MetricInputRole, SourceKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +53,9 @@ impl SeedComputation {
 pub struct SourceSeed {
     pub key: &'static str,
     pub kind: SourceKind,
-    pub source_ref: ObservationSource,
+    /// Managed-observation relation name; must satisfy
+    /// `ObservationRelation::parse` (pinned by a registry test).
+    pub source_ref: &'static str,
 }
 
 pub struct BuiltinSource {
@@ -88,7 +89,7 @@ pub const BUILTIN_SOURCES: &[BuiltinSource] = &[BuiltinSource {
     source: SourceSeed {
         key: "ai_usage",
         kind: SourceKind::ManagedObservation,
-        source_ref: ObservationSource::AiMetricObservations,
+        source_ref: "ai_metric_observations",
     },
     measures: &[
         "accepted_lines",
@@ -329,6 +330,19 @@ mod tests {
         for builtin_source in BUILTIN_SOURCES {
             assert!(is_snake_case(builtin_source.source.key));
             assert!(seen.insert(builtin_source.source.key));
+        }
+    }
+
+    #[test]
+    fn source_refs_parse_as_observation_relations() {
+        use crate::domain::metric_definitions::definition::ObservationRelation;
+        for builtin_source in BUILTIN_SOURCES {
+            assert!(
+                ObservationRelation::parse(builtin_source.source.source_ref).is_some(),
+                "builtin source {} declares an invalid observation relation {:?}",
+                builtin_source.source.key,
+                builtin_source.source.source_ref,
+            );
         }
     }
 
