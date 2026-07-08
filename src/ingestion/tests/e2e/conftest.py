@@ -37,6 +37,7 @@ from lib.config import SessionConfig, TEST_TENANT_ID
 from lib.dbt_runner import DbtRunner
 from lib.enrich import EnrichRunner
 from lib.fixture_loader import TestYaml, discover_tests, load as load_test
+from lib.identity_stub import IdentityStub
 from lib.metric_seed import seed_test_metrics
 from lib.migration_applier import apply_all as apply_ch_migrations
 from lib.worker import WorkerContext
@@ -231,7 +232,24 @@ def _collect_metrics(proc: AnalyticsProcess) -> None:
 
 
 @pytest.fixture(scope="session")
-def analytics(ch_migrations_applied: SessionConfig):
+def identity_stub():
+    """In-process loopback Identity stub (lib.identity_stub).
+
+    The rig runs no Identity service, so GET /v1/persons/{email} would 500
+    ("identity not configured"). This stub resolves one seeded email (→ 200) and
+    404s the rest, so the persons endpoint exercises its real 200/404 contract
+    (#1691). Started before `analytics` (which depends on it) so its URL is known
+    when the binary boots — the analytics IdentityClient reads identity_url once
+    at gear init.
+    """
+    stub = IdentityStub()
+    stub.start()
+    yield stub
+    stub.stop()
+
+
+@pytest.fixture(scope="session")
+def analytics(ch_migrations_applied: SessionConfig, identity_stub: IdentityStub):
     """Spawn the analytics binary baked into the runner image. Its SeaORM
     migrations run on startup; we then upsert test-specific metrics from
     seed/metrics.yaml.
@@ -249,7 +267,7 @@ def analytics(ch_migrations_applied: SessionConfig):
     except ApiSpawnError as e:
         pytest.fail(f"analytics binary not available: {e}", pytrace=False)
     port = find_free_port()
-    proc = AnalyticsProcess(cfg, binary, port)
+    proc = AnalyticsProcess(cfg, binary, port, identity_url=identity_stub.url)
     proc.start()
     seed_test_metrics(cfg)
     yield proc

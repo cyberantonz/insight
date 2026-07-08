@@ -89,9 +89,10 @@ UNIVERSAL_BOILERPLATE = frozenset({401, 429})
 #     cannot answer them (403 only on admin writes via lock/cross-tenant; 409
 #     only on admin-create; 404 only on {id}/lookup routes; 400 only where input
 #     is validated). Symptom of the SPEC BUG above (#1669).
-#   • RIG/PRODUCT (real, tracked) — persons {200,404}: no Identity backend in the
-#     rig; #1663: legacy-threshold success codes 500 on read-back; #1664: admin
-#     duplicate-create 500s instead of 409.
+#   • RIG/PRODUCT (real, tracked) — #1663: legacy-threshold success codes 500 on
+#     read-back; #1664: admin duplicate-create 500s instead of 409. (persons
+#     200/404 used to sit here — no Identity backend — now covered via the rig's
+#     in-process Identity stub, #1691.)
 # Self-actualizing: an entry that becomes observed (spec fixed → real code lands,
 # or backend/bug fixed) or leaves the spec fails the gate → forces cleanup.
 BLOCKED: dict[str, frozenset[int]] = {
@@ -116,8 +117,10 @@ BLOCKED: dict[str, frozenset[int]] = {
     "DELETE /v1/metrics/{id}/thresholds/{tid}": frozenset({204, 403, 409}),  # 204=#1663
     # admin create: 404 boilerplate (unknown metric → 400, not 404) + 409=#1664
     "POST /v1/admin/metric-thresholds": frozenset({404, 409}),
-    # persons: 400/403/409 boilerplate + 200/404 have no Identity backend in the rig
-    "GET /v1/persons/{email}": frozenset({200, 400, 403, 404, 409}),
+    # persons: 400/403/409 boilerplate. 200/404 are covered — the rig wires an
+    # in-process Identity stub (lib.identity_stub), so a seeded email resolves
+    # (200) and an unknown one 404s (test_persons.py). See #1691.
+    "GET /v1/persons/{email}": frozenset({400, 403, 409}),
     # metric-results (unified compute): 403/404/409 boilerplate — no authz/lookup/
     # conflict path (an unknown metric_key is a 400 via `unavailable`, not a 404).
     # 200/400 are coverable; the 200 happy-path needs seeded unified-metric
@@ -305,8 +308,9 @@ class CoverageReport:
     def required_codes(self, op: str) -> set[int]:
         """Declared codes the suite must observe: drop server-fault 5xx, the
         universal boilerplate (401/429), and the per-op BLOCKED set. May be empty
-        (e.g. persons — only its 500 is reachable in the rig), in which case the
-        op passes once merely exercised."""
+        (an op all of whose declared codes are 5xx/boilerplate/BLOCKED), in which
+        case the op contributes nothing to the coverage % and passes once merely
+        exercised."""
         declared = self.spec_ops.get(op, [])
         excluded = BLOCKED.get(op, frozenset())
         return (
@@ -420,7 +424,7 @@ def render_markdown(r: CoverageReport) -> str:
             "(auth disabled / no rate limiter) are excluded on every route. The committed spec "
             "is the `.standard_errors` boilerplate, so most per-op exclusions below are "
             "over-declared codes the handler cannot answer (a SPEC BUG, #1669); the rest are "
-            "rig/product (persons no-backend, #1663, #1664):_",
+            "rig/product (#1663, #1664):_",
             "",
         ]
         for op in sorted(BLOCKED):
