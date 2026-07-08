@@ -9,7 +9,7 @@
 use sea_orm_migration::prelude::*;
 
 const DROP_CHECK: &str =
-    "ALTER TABLE metric_definitions DROP CHECK chk_metric_definitions_computation_fields";
+    "ALTER TABLE metric_definitions DROP CONSTRAINT chk_metric_definitions_computation_fields";
 
 const EXTEND_ENUM: &str = "ALTER TABLE metric_definitions \
      MODIFY COLUMN computation_type ENUM('sum','ratio','median') NOT NULL";
