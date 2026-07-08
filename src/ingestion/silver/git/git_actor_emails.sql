@@ -70,8 +70,12 @@ commit_dominant AS (
     GROUP BY tenant_id, actor_name
 ),
 latest_identity_values AS (
+    -- Tenant keys compare as canonical strings on both sides: the
+    -- identity_inputs physical column type varies by table age (UUID in the
+    -- current model, String in older incremental tables), and ClickHouse
+    -- refuses UUID/String join keys.
     SELECT
-        insight_tenant_id,
+        toString(insight_tenant_id) AS insight_tenant_key,
         insight_source_type,
         source_account_id,
         value_type,
@@ -79,16 +83,16 @@ latest_identity_values AS (
         argMax(operation_type, _version) AS last_operation
     FROM {{ ref('identity_inputs') }} FINAL
     WHERE value_type IN ('display_name', 'email')
-    GROUP BY insight_tenant_id, insight_source_type, source_account_id, value_type
+    GROUP BY insight_tenant_key, insight_source_type, source_account_id, value_type
 ),
 directory_pairs AS (
     SELECT
-        names.insight_tenant_id AS insight_tenant_id,
+        names.insight_tenant_key AS insight_tenant_key,
         lower(trimBoth(names.value)) AS actor_name,
         lower(emails.value) AS email
     FROM latest_identity_values AS names
     INNER JOIN latest_identity_values AS emails
-        ON emails.insight_tenant_id = names.insight_tenant_id
+        ON emails.insight_tenant_key = names.insight_tenant_key
         AND emails.insight_source_type = names.insight_source_type
         AND emails.source_account_id = names.source_account_id
         AND emails.value_type = 'email'
@@ -100,16 +104,16 @@ directory_pairs AS (
 ),
 directory_dominant AS (
     SELECT
-        insight_tenant_id,
+        insight_tenant_key,
         actor_name,
         if(uniqExact(email) = 1, any(email), CAST(NULL AS Nullable(String))) AS email
     FROM directory_pairs
-    GROUP BY insight_tenant_id, actor_name
+    GROUP BY insight_tenant_key, actor_name
 ),
 tenant_hashes AS (
     SELECT DISTINCT
         tenant_id,
-        toUUID(UUIDNumToString(sipHash128(coalesce(tenant_id, '')))) AS insight_tenant_id
+        UUIDNumToString(sipHash128(coalesce(tenant_id, ''))) AS insight_tenant_key
     FROM git_tenants
 ),
 actor_names AS (
@@ -120,7 +124,7 @@ actor_names AS (
         directory_dominant.actor_name AS actor_name
     FROM directory_dominant
     INNER JOIN tenant_hashes
-        ON tenant_hashes.insight_tenant_id = directory_dominant.insight_tenant_id
+        ON tenant_hashes.insight_tenant_key = directory_dominant.insight_tenant_key
 )
 SELECT
     git_tenants.tenant_id AS tenant_id,
@@ -136,7 +140,7 @@ LEFT JOIN commit_dominant
 LEFT JOIN tenant_hashes
     ON tenant_hashes.tenant_id = actor_names.tenant_id
 LEFT JOIN directory_dominant
-    ON directory_dominant.insight_tenant_id = tenant_hashes.insight_tenant_id
+    ON directory_dominant.insight_tenant_key = tenant_hashes.insight_tenant_key
     AND directory_dominant.actor_name = actor_names.actor_name
 WHERE coalesce(commit_dominant.email, directory_dominant.email) IS NOT NULL
   AND coalesce(commit_dominant.email, directory_dominant.email) != ''
