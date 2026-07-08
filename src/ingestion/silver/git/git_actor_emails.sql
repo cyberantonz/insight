@@ -45,11 +45,13 @@ commit_pairs AS (
     SELECT
         tenant_id,
         lower(trimBoth(author_name)) AS actor_name,
-        lower(author_email) AS email,
+        lower(trimBoth(author_email)) AS email,
         uniqExact(commit_hash) AS commit_count
     FROM {{ ref('class_git_commits') }} FINAL
-    WHERE author_name != ''
-      AND author_email != ''
+    -- Filter on the normalized keys, not the raw columns: a whitespace-only
+    -- name/email survives `!= ''` but normalizes to '', colliding on empty.
+    WHERE trimBoth(author_name) != ''
+      AND trimBoth(author_email) != ''
     GROUP BY tenant_id, actor_name, email
 ),
 commit_dominant AS (
@@ -89,7 +91,7 @@ directory_pairs AS (
     SELECT
         names.insight_tenant_key AS insight_tenant_key,
         lower(trimBoth(names.value)) AS actor_name,
-        lower(emails.value) AS email
+        lower(trimBoth(emails.value)) AS email
     FROM latest_identity_values AS names
     INNER JOIN latest_identity_values AS emails
         ON emails.insight_tenant_key = names.insight_tenant_key
@@ -99,8 +101,8 @@ directory_pairs AS (
     WHERE names.value_type = 'display_name'
       AND names.last_operation = 'UPSERT'
       AND emails.last_operation = 'UPSERT'
-      AND names.value != ''
-      AND emails.value != ''
+      AND trimBoth(names.value) != ''
+      AND trimBoth(emails.value) != ''
 ),
 directory_dominant AS (
     SELECT
@@ -126,21 +128,34 @@ actor_names AS (
     INNER JOIN tenant_hashes
         ON tenant_hashes.insight_tenant_key = directory_dominant.insight_tenant_key
 )
-SELECT
-    git_tenants.tenant_id AS tenant_id,
-    git_tenants.data_source AS data_source,
-    actor_names.actor_name AS actor_name,
-    assumeNotNull(coalesce(commit_dominant.email, directory_dominant.email)) AS email
-FROM actor_names
-INNER JOIN git_tenants
-    ON git_tenants.tenant_id = actor_names.tenant_id
-LEFT JOIN commit_dominant
-    ON commit_dominant.tenant_id = actor_names.tenant_id
-    AND commit_dominant.actor_name = actor_names.actor_name
-LEFT JOIN tenant_hashes
-    ON tenant_hashes.tenant_id = actor_names.tenant_id
-LEFT JOIN directory_dominant
-    ON directory_dominant.insight_tenant_key = tenant_hashes.insight_tenant_key
-    AND directory_dominant.actor_name = actor_names.actor_name
-WHERE coalesce(commit_dominant.email, directory_dominant.email) IS NOT NULL
-  AND coalesce(commit_dominant.email, directory_dominant.email) != ''
+SELECT tenant_id, data_source, actor_name, assumeNotNull(email) AS email
+FROM (
+    SELECT
+        git_tenants.tenant_id AS tenant_id,
+        git_tenants.data_source AS data_source,
+        actor_names.actor_name AS actor_name,
+        -- Commit co-occurrence is authoritative: if a name appears in commits
+        -- at all, its resolution wins — including a tie, which resolves to
+        -- NULL and thus excludes the name rather than deferring to a directory
+        -- guess (a commit tie is evidence the name is shared by two people).
+        -- Only names with no commit signal fall back to the directory tier.
+        if(
+            commit_dominant.actor_name IS NOT NULL,
+            commit_dominant.email,
+            directory_dominant.email
+        ) AS email
+    FROM actor_names
+    INNER JOIN git_tenants
+        ON git_tenants.tenant_id = actor_names.tenant_id
+    LEFT JOIN commit_dominant
+        ON commit_dominant.tenant_id = actor_names.tenant_id
+        AND commit_dominant.actor_name = actor_names.actor_name
+    LEFT JOIN tenant_hashes
+        ON tenant_hashes.tenant_id = actor_names.tenant_id
+    LEFT JOIN directory_dominant
+        ON directory_dominant.insight_tenant_key = tenant_hashes.insight_tenant_key
+        AND directory_dominant.actor_name = actor_names.actor_name
+    SETTINGS join_use_nulls = 1
+)
+WHERE email IS NOT NULL
+  AND email != ''
