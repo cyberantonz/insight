@@ -25,3 +25,15 @@ multiIf(
     {{ category_expr }}
 )
 {% endmacro %}
+
+{# Display label for the git `source` dimension. Static product vocabulary
+   (same rationale as the category labels), centralized so the gold view
+   carries no inline vendor mapping. #}
+{% macro git_source_label(source_expr) %}
+multiIf(
+    {{ source_expr }} = 'github', 'GitHub',
+    {{ source_expr }} = 'gitlab', 'GitLab',
+    {{ source_expr }} = 'bitbucket_cloud', 'Bitbucket Cloud',
+    {{ source_expr }}
+)
+{% endmacro %}

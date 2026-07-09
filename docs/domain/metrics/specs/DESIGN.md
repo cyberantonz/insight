@@ -427,16 +427,18 @@ The source exists but does not emit the measure yet.
 
 The metric family reads data no managed source covers.
 
-1. Create a dbt gold model in `src/ingestion/gold/` emitting the source
-   measure observation contract, `schema=insight`, `ref()`-ing silver models
-   (medallion layering rules: `docs/domain/ingestion-data-flow/specs/DESIGN.md`).
-   Document columns and measure keys in `src/ingestion/gold/schema.yml`.
-2. Add an `ObservationSource` enum variant and `from_ref`/`table_ref` mapping
-   in `src/backend/services/analytics/src/domain/metric_definitions/definition.rs`
-   (the `db_strings_round_trip` test covers the new pair).
-3. Add a `BuiltinSource` (source + measures + dimensions) to `builtin.rs`.
-4. Add `MetricSeed`s as in case 1.
-5. Validate: `dbt parse` + `cargo test -p analytics` (see Validation
+1. Create a dbt gold model in `src/ingestion/gold/` named
+   `<family>_metric_observations`, emitting the source measure observation
+   contract, `schema=insight`, `ref()`-ing silver models (medallion layering
+   rules: `docs/domain/ingestion-data-flow/specs/DESIGN.md`). Document columns
+   and measure keys in `src/ingestion/gold/schema.yml`.
+2. Add a `BuiltinSource` (source + measures + dimensions) to `builtin.rs`,
+   with `source_ref` set to the relation name. No backend enum or table-name
+   code changes: the relation name is data, validated on load against the
+   `<family>_metric_observations` shape (`ObservationRelation`) and probed at
+   runtime by the schema validator.
+3. Add `MetricSeed`s as in case 1.
+4. Validate: `dbt parse` + `cargo test -p analytics` (see Validation
    commands). The runtime schema validator probes the new relation at
    startup.
 

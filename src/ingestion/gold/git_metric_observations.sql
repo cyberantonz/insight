@@ -6,12 +6,12 @@
 ) }}
 
 -- Source measure observations for the unified metrics runtime, git family.
--- Reads class contracts and the identity bridge only; no vendor-specific
--- columns, tool names, or label mappings may appear in this model. Every
--- measure is emitted through the shape macros in
--- macros/metric_observation_measures.sql; file classification comes from
--- macros/git_file_category.sql (computed here, not in silver, so taxonomy
--- changes apply retroactively).
+-- Reads class contracts only; no vendor-specific columns or tool names may
+-- appear inline. Every measure is emitted through the shape macros in
+-- macros/metric_observation_measures.sql; file classification and the
+-- source-dimension display label come from macros/git_file_category.sql
+-- (static product vocabulary, computed here rather than in silver so
+-- taxonomy/label changes apply retroactively on every read).
 --
 -- Grain per measure:
 --   day-grain sums:  commit_count, code_lines_added, lines_added,
@@ -58,12 +58,7 @@ commits_source AS (
         lines_added,
         lines_removed,
         replaceOne(data_source, 'insight_', '') AS source_value,
-        multiIf(
-            source_value = 'github', 'GitHub',
-            source_value = 'gitlab', 'GitLab',
-            source_value = 'bitbucket_cloud', 'Bitbucket Cloud',
-            source_value
-        ) AS source_label,
+        {{ git_source_label('source_value') }} AS source_label,
         CAST(
             [tuple('source', source_value, source_label)]
             AS Array(Tuple(key String, value String, label Nullable(String)))
@@ -72,6 +67,11 @@ commits_source AS (
     WHERE trimBoth(author_email) != ''
       AND date IS NOT NULL
       AND is_merge_commit = 0
+    -- Deterministic survivor per (tenant, source, hash): without an ORDER BY,
+    -- LIMIT 1 BY picks an arbitrary repo copy of a forked commit, which would
+    -- vary across runs and shift the project_key/repo_slug used by the
+    -- file-change join.
+    ORDER BY tenant_id, data_source, commit_hash, source_id, project_key, repo_slug
     LIMIT 1 BY tenant_id, data_source, commit_hash
 ),
 file_changes_source AS (
@@ -159,12 +159,7 @@ pull_requests_source AS (
             CAST(NULL AS Nullable(Float64))
         ) AS cycle_hours,
         replaceOne(prs.data_source, 'insight_', '') AS source_value,
-        multiIf(
-            source_value = 'github', 'GitHub',
-            source_value = 'gitlab', 'GitLab',
-            source_value = 'bitbucket_cloud', 'Bitbucket Cloud',
-            source_value
-        ) AS source_label,
+        {{ git_source_label('source_value') }} AS source_label,
         CAST(
             [tuple('source', source_value, source_label)]
             AS Array(Tuple(key String, value String, label Nullable(String)))
