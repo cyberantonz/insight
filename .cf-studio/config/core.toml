@@ -9,7 +9,8 @@ format = "CFS"
 path = "config/kits/sdlc"
 version = "v1.2.1"
 source = "github:constructorfabric/studio-kit-sdlc"
-tool_risk_fingerprint = "3bdcd30d3029ad80e74c76eb0b57d80ad617a51191eb9d9307b2921c65f5dc16"
+install_mode = "copy"
+tracking = "tracked"
 
 [kits.sdlc.resources]
 [kits.sdlc.resources.adr_template]
