@@ -470,7 +470,7 @@ mod tests {
                 value: MetricInput {
                     role: MetricInputRole::Value,
                     observation_relation: ObservationRelation::parse("ai_metric_observations")
-                .unwrap_or_else(|| panic!("fixture relation must parse")),
+                        .unwrap_or_else(|| panic!("fixture relation must parse")),
                     source_key: "ai_usage".to_owned(),
                     measure_key: "accepted_lines".to_owned(),
                 },

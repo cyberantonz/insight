@@ -957,9 +957,9 @@ mod tests {
             compile_peer_batch_query(&[&median_metric()], &request(), "org_unit"),
         ] {
             assert!(
-                query
-                    .sql
-                    .contains("quantileExactIfOrNull(0.5)(value, source_key = ? AND measure_key = ?"),
+                query.sql.contains(
+                    "quantileExactIfOrNull(0.5)(value, source_key = ? AND measure_key = ?"
+                ),
                 "median must batch as an OrNull quantile column"
             );
             assert_eq!(query.sql.matches('?').count(), query.params.len());
@@ -969,10 +969,16 @@ mod tests {
     #[test]
     fn median_single_views_use_exact_median() {
         let ts = compile_timeseries_query(&median_metric(), &request(), Bucket::Week, &[]);
-        assert!(ts.sql.contains("quantileExactIf(0.5)(value, value IS NOT NULL)"));
+        assert!(
+            ts.sql
+                .contains("quantileExactIf(0.5)(value, value IS NOT NULL)")
+        );
         assert!(ts.sql.contains("GROUP BY entity_id, bucket_start"));
         let bd = compile_breakdown_query(&median_metric(), &request(), &["source".to_owned()]);
-        assert!(bd.sql.contains("quantileExactIf(0.5)(value, value IS NOT NULL)"));
+        assert!(
+            bd.sql
+                .contains("quantileExactIf(0.5)(value, value IS NOT NULL)")
+        );
     }
 
     #[test]

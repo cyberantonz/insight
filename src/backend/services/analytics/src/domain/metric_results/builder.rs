@@ -303,7 +303,8 @@ mod tests {
     use serde_json::json;
 
     use crate::domain::metric_definitions::definition::{
-        MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole, ObservationRelation,
+        MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole,
+        ObservationRelation,
     };
     use crate::domain::metric_results::view::Bucket;
 
@@ -361,7 +362,13 @@ mod tests {
         }
     }
 
-    fn histogram_row(entity_id: &str, bin_idx: u32, lo: f64, hi: f64, count: u64) -> HistogramQueryRow {
+    fn histogram_row(
+        entity_id: &str,
+        bin_idx: u32,
+        lo: f64,
+        hi: f64,
+        count: u64,
+    ) -> HistogramQueryRow {
         HistogramQueryRow {
             entity_id: entity_id.to_owned(),
             bin_idx,
