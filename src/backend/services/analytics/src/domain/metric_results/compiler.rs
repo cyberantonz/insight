@@ -256,38 +256,30 @@ pub(crate) fn compile_histogram_query(
     let limit = query_row_limit();
     let sql = format!(
         r"
-        WITH
-        events AS (
+        WITH events AS (
             SELECT
                 entity_id,
-                assumeNotNull(value) AS value
+                assumeNotNull(value) AS value,
+                min(value) OVER (PARTITION BY entity_id) AS entity_lo,
+                max(value) OVER (PARTITION BY entity_id) AS entity_hi
             FROM {observation_table}
             WHERE {metric_where}
               AND entity_id IN ({entities})
               AND value IS NOT NULL
-        ),
-        bounds AS (
-            SELECT
-                entity_id,
-                min(value) AS entity_lo,
-                max(value) AS entity_hi
-            FROM events
-            GROUP BY entity_id
         )
         SELECT
             events.entity_id AS entity_id,
             if(
-                bounds.entity_hi = bounds.entity_lo,
+                events.entity_hi = events.entity_lo,
                 0,
                 toUInt32(least({max_bin}, toInt64(floor(
-                    (events.value - bounds.entity_lo) * {bins} / (bounds.entity_hi - bounds.entity_lo)
+                    (events.value - events.entity_lo) * {bins} / (events.entity_hi - events.entity_lo)
                 ))))
             ) AS bin_idx,
-            any(bounds.entity_lo) AS entity_lo,
-            any(bounds.entity_hi) AS entity_hi,
+            any(events.entity_lo) AS entity_lo,
+            any(events.entity_hi) AS entity_hi,
             toUInt64(count()) AS bin_count
         FROM events
-        INNER JOIN bounds ON bounds.entity_id = events.entity_id
         GROUP BY entity_id, bin_idx
         ORDER BY entity_id, bin_idx
         LIMIT {limit}
@@ -335,15 +327,21 @@ pub(crate) fn compile_peer_batch_query(
         );
         let observed = format!("peer.{value} IS NOT NULL");
         let pool = format!("uniqExactIf(peer.entity_id, {observed})");
+        // One `quantilesExactIf` over the pool yields all three quartiles in a
+        // single sort; the three `[i]` indexes reference the identical
+        // aggregate, which ClickHouse computes once. min/max come back from
+        // `*IfOrNull` already Nullable, so the disclosure guard's NULL branch
+        // needs no `toNullable`; the quartile elements are non-nullable and do.
+        let quantiles = format!("quantilesExactIf(0.25, 0.5, 0.75)(peer.{value}, {observed})");
         let _ = write!(
             stats_selects,
             ",
             target_values.{value} AS {target},
-            if({pool} >= {min_peer_n}, toNullable(quantileExactIf(0.25)(peer.{value}, {observed})), NULL) AS {p25},
-            if({pool} >= {min_peer_n}, toNullable(quantileExactIf(0.5)(peer.{value}, {observed})), NULL) AS {median},
-            if({pool} >= {min_peer_n}, toNullable(quantileExactIf(0.75)(peer.{value}, {observed})), NULL) AS {p75},
-            if({pool} >= {min_peer_n}, toNullable(minIfOrNull(peer.{value}, {observed})), NULL) AS {min},
-            if({pool} >= {min_peer_n}, toNullable(maxIfOrNull(peer.{value}, {observed})), NULL) AS {max},
+            if({pool} >= {min_peer_n}, toNullable({quantiles}[1]), NULL) AS {p25},
+            if({pool} >= {min_peer_n}, toNullable({quantiles}[2]), NULL) AS {median},
+            if({pool} >= {min_peer_n}, toNullable({quantiles}[3]), NULL) AS {p75},
+            if({pool} >= {min_peer_n}, minIfOrNull(peer.{value}, {observed}), NULL) AS {min},
+            if({pool} >= {min_peer_n}, maxIfOrNull(peer.{value}, {observed}), NULL) AS {max},
             toUInt64({pool}) AS {n}",
             target = aliases.target,
             p25 = aliases.p25,
@@ -609,16 +607,17 @@ fn dimension_select_group(dimensions: &[String]) -> (String, String) {
     (select, groups.join(", "))
 }
 
+// `indexOf(dimensions.1, key)` locates the matching tuple by its key column in
+// one pass (0 when absent), then positional access into the value (`.2`) and
+// label (`.3`) columns reuses that index — replacing three `arrayFilter`
+// materializations of the tuple array per row with cheap column scans.
 fn dimension_value_expr(dimension: &str) -> String {
     format!(
         r"
         if(
-            length(arrayFilter(d -> tupleElement(d, 1) = '{dimension}', dimensions)) = 0,
+            indexOf(dimensions.1, '{dimension}') = 0,
             '{UNKNOWN_DIMENSION_VALUE}',
-            coalesce(
-                tupleElement(arrayFilter(d -> tupleElement(d, 1) = '{dimension}', dimensions)[1], 2),
-                '{UNKNOWN_DIMENSION_VALUE}'
-            )
+            coalesce(dimensions.2[indexOf(dimensions.1, '{dimension}')], '{UNKNOWN_DIMENSION_VALUE}')
         )
         "
     )
@@ -628,12 +627,9 @@ fn dimension_label_expr(dimension: &str) -> String {
     format!(
         r"
         if(
-            length(arrayFilter(d -> tupleElement(d, 1) = '{dimension}', dimensions)) = 0,
+            indexOf(dimensions.1, '{dimension}') = 0,
             '{UNKNOWN_DIMENSION_LABEL}',
-            coalesce(
-                tupleElement(arrayFilter(d -> tupleElement(d, 1) = '{dimension}', dimensions)[1], 3),
-                '{UNKNOWN_DIMENSION_LABEL}'
-            )
+            coalesce(dimensions.3[indexOf(dimensions.1, '{dimension}')], '{UNKNOWN_DIMENSION_LABEL}')
         )
         "
     )
@@ -836,7 +832,7 @@ mod tests {
         let query = compile_breakdown_query(&sum_metric(), &request(), &["tool".to_owned()]);
         assert!(query.sql.contains("AS dim_0_value"));
         assert!(query.sql.contains("AS dim_0_label"));
-        assert!(query.sql.contains("tupleElement(d, 1) = 'tool'"));
+        assert!(query.sql.contains("indexOf(dimensions.1, 'tool')"));
         assert!(
             query
                 .sql
@@ -903,6 +899,14 @@ mod tests {
             )));
             assert!(query.sql.contains(&format!("AS m{item}_target")));
         }
+        // Quartiles come from one `quantilesExactIf` per item (single sort),
+        // not three separate `quantileExactIf` calls.
+        for item in 0..2 {
+            assert!(query.sql.contains(&format!(
+                "quantilesExactIf(0.25, 0.5, 0.75)(peer.m{item}, peer.m{item} IS NOT NULL)"
+            )));
+        }
+        assert!(!query.sql.contains("quantileExactIf(0.25)"));
         // Duplicate cohort membership must not fan out the pool.
         assert_eq!(query.sql.matches("SELECT DISTINCT").count(), 2);
         // Honest-null must not depend on server config or column typing.
@@ -984,12 +988,22 @@ mod tests {
     #[test]
     fn histogram_query_bins_deterministically_from_entity_bounds() {
         let query = compile_histogram_query(&median_metric(), &request());
-        assert!(query.sql.contains("min(value) AS entity_lo"));
-        assert!(query.sql.contains("max(value) AS entity_hi"));
+        assert!(
+            query
+                .sql
+                .contains("min(value) OVER (PARTITION BY entity_id) AS entity_lo")
+        );
+        assert!(
+            query
+                .sql
+                .contains("max(value) OVER (PARTITION BY entity_id) AS entity_hi")
+        );
         assert!(query.sql.contains("least(9,"));
         assert!(query.sql.contains("* 10 /"));
         assert!(query.sql.contains("GROUP BY entity_id, bin_idx"));
-        assert!(query.sql.contains("bounds.entity_hi = bounds.entity_lo"));
+        assert!(query.sql.contains("events.entity_hi = events.entity_lo"));
+        // Bounds come from a window pass, not a self-join back to the events.
+        assert!(!query.sql.contains("JOIN"));
         // Deterministic arithmetic only — never the adaptive aggregate.
         assert!(!query.sql.contains("histogram("));
         assert_eq!(query.sql.matches('?').count(), query.params.len());
