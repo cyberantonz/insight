@@ -101,6 +101,23 @@ The unified schema does not normalize source-specific field IDs. `field_id` is s
 
 Where source systems provide value IDs, those IDs are stored in `value_ids`. Where no ID exists (Jira labels, Azure DevOps tags), the string value itself serves as the identifier, classified as `string_literal`.
 
+#### Unified Status Category
+
+- [ ] `p1` - **ID**: `cpt-insightspec-principle-tt-silver-status-category`
+
+Task "closedness" — and the coarse lifecycle axis `new` / `in_progress` / `done` — is derived from a **source-neutral `status_category`**, never from a status *display name*. Every source maps its own done-signal onto the same three-value axis:
+
+- **Jira** — from `statusCategory` (`key` ∈ `new`/`indeterminate`/`done`/`undefined`, equivalently `id` `2`/`4`/`3`/`1`).
+- **YouTrack** — from the State-bundle value's `isResolved` flag (corroborated by the issue-level `resolved` timestamp).
+- **Azure DevOps** — from `System.State` category (`Proposed`/`InProgress`/`Resolved`/`Completed`/`Removed`).
+- **GitHub Projects V2** — from the Status single-select option mapped to the same three states.
+
+Consumers (Gold close-detection) filter on `status_category = 'done'`. They **must not** match localized labels such as `Closed` / `Resolved` / `Verified` / `Готово` / `Done` — a display name is not a lifecycle signal and varies by workflow, project template, and locale.
+
+The mapping lives in the `task_tracker_statuses` dimension (§3.7), keyed by `status_id` — the same id carried in `task_tracker_field_history.value_ids[1]` for the status field. It is **not** denormalized onto the event log, so the Enrich contract is untouched, and each source populates its own per-source projection of the dimension using its native done-signal.
+
+Crucially, the join is performed **once, inside Silver**, and materialized as `task_tracker_status_history` (§3.7) — the source-neutral status stream that already carries `status_category`. Gold and every other consumer read the reconciled `status_category` / `is_closed` from that Silver model, never `value_displays`, a name list, or the dimension directly. All cross-source divergence is therefore resolved **before** the Silver→Gold boundary — Gold contains no per-source status logic at all.
+
 ### 2.2 Constraints
 
 #### ClickHouse SQL Limitations
@@ -327,6 +344,73 @@ Field type snapshots from source API — one row per field per sync run where me
 
 ---
 
+#### Table: `task_tracker_statuses`
+
+**ID**: `cpt-insightspec-dbtable-tt-silver-statuses`
+
+Status dimension — one row per source status, mapping the source `status_id` to a **unified lifecycle category**. This is the join target that lets Gold detect "done" independently of status display name or locale (see principle `cpt-insightspec-principle-tt-silver-status-category`). Produced by dbt Step 1 from each source's status lookup and unioned by `data_source`:
+
+- **Jira** — `bronze_jira.jira_statuses` (from `GET /rest/api/3/status`), carrying `statusCategory.id` / `.key` / `.name`.
+- **YouTrack** — State-bundle values from `bronze_youtrack.youtrack_project_custom_fields` (the State custom field's `bundle.values[]`, each with `isResolved`).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `insight_source_id` | String | REQUIRED | Connector instance |
+| `data_source` | String | REQUIRED | Source type |
+| `status_id` | String | REQUIRED | Source status id — joins `task_tracker_field_history.value_ids[1]` where `field_id='status'` |
+| `status_name` | String | REQUIRED | Source display label (localized — informational only, never used for logic) |
+| `category_id` | Nullable(Int32) | NULLABLE | Source-native category id when available (Jira `statusCategory.id`) |
+| `category_key` | String | NULLABLE | Source-native stable category key when available (Jira `statusCategory.key`) |
+| `status_category` | Enum8('new'=1,'in_progress'=2,'done'=3,'undefined'=4) | REQUIRED | **Unified, source-neutral lifecycle** — the only field Gold reads |
+| `collected_at` | DateTime64(3) | REQUIRED | Ingestion timestamp |
+| `_version` | UInt64 | REQUIRED | ReplacingMergeTree deduplication version |
+
+**Engine**: `ReplacingMergeTree(_version)`
+
+**ORDER BY**: `(insight_source_id, data_source, status_id)`
+
+**Unified category mapping**:
+
+| Source | Native signal | → `status_category` |
+|--------|---------------|---------------------|
+| Jira | `statusCategory.key` = `new` / `indeterminate` / `done` / `undefined` (ids `2` / `4` / `3` / `1`) | `new` / `in_progress` / `done` / `undefined` |
+| YouTrack | State value `isResolved = true` → done; otherwise `new` (never entered) / `in_progress` (best-effort) | `done` / `new` / `in_progress` |
+
+> **Implementation status (2026-07 — issue #1541):** this dimension is **specified but not yet built**. No `class_task_statuses` silver model exists today, and deployed Gold hardcodes `status_name IN ('Closed','Resolved','Verified')` — which is exactly the defect this dimension removes. See [task-metrics-map.md](../../specs/task-metrics-map.md) for the metric-level recipes that assume this table.
+
+---
+
+#### Table: `task_tracker_status_history`
+
+**ID**: `cpt-insightspec-dbtable-tt-silver-status-history`
+
+**Source-neutral status stream — the single status object Gold consumes, and the point at which all cross-source divergence is already resolved.** The status→category join is materialized *inside Silver* here, not deferred to Gold: one row per status-change event, built as `task_tracker_field_history` (`field_id='status'`) LEFT JOIN `task_tracker_statuses` on `status_id = value_ids[1]`.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `insight_source_id` | String | REQUIRED | Connector instance |
+| `data_source` | String | REQUIRED | Source type |
+| `issue_id` | String | REQUIRED | Issue |
+| `id_readable` | String | REQUIRED | Human-readable key |
+| `event_at` | DateTime64(3) | REQUIRED | When the status changed |
+| `event_kind` | Enum8('changelog'=1,'initial'=2) | REQUIRED | Real transition vs synthetic initial |
+| `author_id` | Nullable(String) | NULLABLE | Who changed it |
+| `status_id` | String | REQUIRED | Source status id (= `value_ids[1]`) |
+| `status_name` | String | REQUIRED | Localized label — informational only, never used for logic |
+| `status_category` | Enum8('new'=1,'in_progress'=2,'done'=3,'undefined'=4) | REQUIRED | **Reconciled lifecycle — the only status signal crossing into Gold** |
+| `is_closed` | UInt8 | REQUIRED | `status_category = 'done'`, precomputed |
+| `_version` | UInt64 | REQUIRED | ReplacingMergeTree deduplication version |
+
+**Engine**: `ReplacingMergeTree(_version)`
+
+**ORDER BY**: `(insight_source_id, data_source, issue_id, event_at)`
+
+**Reconciliation boundary**: every source difference — Jira `statusCategory` vs YouTrack `isResolved`, English vs localized labels, per-project custom workflows — is reconciled *before* this table (in each per-source projection of `task_tracker_statuses`, which emits the same `status_category` enum). Anything reading `task_tracker_status_history` is source-agnostic by construction. Gold's `task_issue_current_state`, `task_status_intervals`, and close/reopen views read `status_category` / `is_closed` from here and contain **zero** status-name literals and **zero** dimension joins.
+
+**Completeness guarantee (no silent divergence)**: a status event whose `status_id` has no matching row in `task_tracker_statuses` resolves to `status_category = 'undefined'` — never to a guessed label. A dbt data test (`assert_status_ids_mapped`) asserts that the `undefined`-because-unmapped set is empty, so a missing dimension row (e.g. a project-scoped status not returned by the global lookup) surfaces as a **failing test**, not as a silently zeroed closed-task count — the exact failure mode of issue #1541.
+
+---
+
 #### Supporting Tables (unchanged)
 
 The following tables retain their schemas as defined in the [current Silver spec](../../README.md). They are populated by dbt Step 1 from Bronze and consumed alongside `task_tracker_field_history`.
@@ -448,6 +532,23 @@ Connector execution log. PK: `(run_id)`. Fields: `started_at`, `completed_at`, `
 
 ---
 
+### Status → lifecycle category (all sources)
+
+The status field flows through `task_tracker_field_history` as any other field: `field_id = 'status'`, `value_ids[1] = <source status id>`, `value_displays[1] = <localized label>`. The **label is never interpreted**; the id is joined to `task_tracker_statuses` to obtain the unified `status_category`. Each source populates its per-source projection of that dimension:
+
+| Source | Status lookup source | done-signal → `status_category='done'` | Connector prerequisite |
+|--------|----------------------|----------------------------------------|------------------------|
+| Jira | `bronze_jira.jira_statuses` (`/rest/api/3/status`) | `statusCategory.key = 'done'` (id `3`) | Flatten `statusCategory.key` → `category_key` in the `jira_statuses` stream (today only `category_id` + `category_name` are flattened). `category_id = 3` is the numeric fallback. |
+| YouTrack | State custom-field `bundle.values[]` in `bronze_youtrack.youtrack_project_custom_fields`; corroborated by `youtrack_issue.resolved` | `isResolved = true` | Add `isResolved` to the `bundle(values(...))` field selection in `connector.yaml` (currently not requested). `youtrack_issue.resolved IS NOT NULL` is the issue-level fallback already in Bronze. |
+| Azure DevOps | `System.State` field metadata (state category) | state category `Completed`/`Resolved` | State-category ingestion (future). |
+| GitHub Projects V2 | Status single-select options | option mapped to `done` | Option→category mapping (future). |
+
+This resolution is materialized once in Silver as `task_tracker_status_history` (`cpt-insightspec-dbtable-tt-silver-status-history`); Gold reads the reconciled `status_category` from it and never performs the join, matches a label, or knows which source a row came from.
+
+See principle `cpt-insightspec-principle-tt-silver-status-category` and tables `cpt-insightspec-dbtable-tt-silver-statuses`, `cpt-insightspec-dbtable-tt-silver-status-history`.
+
+---
+
 ### Identity Resolution
 
 **Resolution chain** (same as current spec):
@@ -471,6 +572,7 @@ task_tracker_field_history.author_id
 |-------------|-----------|
 | `task_tracker_field_history` (status field) | Cycle time: first `In Progress` to first `Done` |
 | `task_tracker_field_history` (status field) | Status periods: time between consecutive status events |
+| `task_tracker_status_history` (reconciled in Silver) | Close detection: an issue/event is "done" when `status_category = 'done'` (or `is_closed = 1`). Read directly — the `status_id → status_category` join is already materialized in Silver, so Gold performs no join and matches no label. Replaces the hardcoded `status_name IN ('Closed','Resolved','Verified')` (issue #1541). Cycle-time / status-period rows above read `status_category` from the same model. |
 | `task_tracker_field_history` (assignee field) | WIP: count of active issues per person at any point |
 | `task_tracker_field_history` (sprint field) | Sprint velocity: story points completed per sprint |
 | `task_tracker_worklogs` | Worklog hours per person per project |

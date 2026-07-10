@@ -657,6 +657,29 @@ CREATE TABLE IF NOT EXISTS silver.class_task_users (
 SQL
 fi
 
+# silver.class_task_statuses — task-tracking status dimension (issue #1541).
+# Referenced by the task-delivery gold migration
+# (20260708000000_task-delivery-status-category.sql) which JOINs it to derive
+# `status_category` (done/in_progress) for close-detection. Must exist before
+# that migration's CREATE ... LEFT JOIN silver.class_task_statuses.
+if ! ch_table_exists silver class_task_statuses; then
+  echo "  Creating placeholder: silver.class_task_statuses"
+  run_ch <<'SQL'
+CREATE TABLE IF NOT EXISTS silver.class_task_statuses (
+    insight_source_id String,
+    data_source       String,
+    status_id         String,
+    status_name       Nullable(String),
+    category_id       Nullable(Int32),
+    category_key      Nullable(String),
+    status_category   String,
+    collected_at      DateTime64(3),
+    unique_key        String,
+    _version          UInt64
+) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key COMMENT 'INSIGHT_PLACEHOLDER_v1';
+SQL
+fi
+
 # silver.class_task_worklogs — task-tracking worklog rows. Referenced by
 # `views-from-silver.sql` for time-spent aggregations
 # (author_email/author_id, work_date, duration_seconds/worklog_seconds).
