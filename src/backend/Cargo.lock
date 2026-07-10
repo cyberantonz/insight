@@ -3022,6 +3022,7 @@ dependencies = [
  "cf-gears-toolkit",
  "cf-gears-types-registry",
  "clap",
+ "sea-orm",
  "serde",
  "tokio",
  "tracing",

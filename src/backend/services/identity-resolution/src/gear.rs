@@ -9,16 +9,19 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use sea_orm::DatabaseConnection;
 use toolkit::api::OpenApiRegistry;
 use toolkit::{Gear, GearCtx, RestApiCapability};
 
 use crate::config::GearConfig;
 
-/// Shared application state. Grows as we wire the DB pool and services in later
-/// steps; injected into handlers once we add routes.
+/// Shared application state. Injected into handlers once we add routes.
 #[derive(Clone)]
 pub struct AppState {
-    #[allow(dead_code)] // consumed once the DB pool + handlers are wired
+    /// MariaDB connection pool (SeaORM) — reads `persons` / `account_person_map`.
+    #[allow(dead_code)] // consumed once the read handlers are wired
+    pub db: DatabaseConnection,
+    #[allow(dead_code)] // consumed once handlers need runtime config
     pub config: GearConfig,
 }
 
@@ -37,7 +40,10 @@ impl Gear for IdentityResolutionGear {
         let config: GearConfig = ctx.config()?;
         tracing::info!("starting identity-resolution gear");
 
-        let state = AppState { config };
+        // Self-managed MariaDB pool (same approach as the analytics gear).
+        let db = crate::infra::db::connect(&config.database_url).await?;
+
+        let state = AppState { db, config };
         self.state
             .set(Arc::new(state))
             .map_err(|_| anyhow::anyhow!("{} gear already initialized", Self::MODULE_NAME))?;

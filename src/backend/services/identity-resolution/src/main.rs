@@ -9,6 +9,7 @@
 
 mod config;
 mod gear;
+mod infra;
 
 // System gears — linked via inventory for the REST host and the (disabled) auth
 // pipeline. Same no-auth set as the analytics host.

@@ -40,3 +40,6 @@ serde = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }
+
+# MariaDB via SeaORM — connection pool now; entities land with the read step.
+sea-orm = { workspace = true }
