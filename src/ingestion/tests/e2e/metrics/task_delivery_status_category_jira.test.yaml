@@ -105,9 +105,12 @@ cases:
       - in: task_delivery
         assert: "result.status == 'ok'"
       # Done + Готово (statusCategory done) counted; "Closed" (indeterminate) excluded.
+      # Department = alice alone, so the distribution is the single value {2} and
+      # every bullet stat collapses to 2 (the no-unasserted-stat gate requires all
+      # returned stats to be checked).
       - in: task_delivery
         find: { metric_key: tasks_completed }
-        equal: { value: 2 }
+        equal: { value: 2, median: 2, p25: 2, p75: 2, range_min: 2, range_max: 2 }
 
   - name: "the indeterminate decoy alone yields no completion (empty window before close)"
     request:
