@@ -6,8 +6,13 @@
 //! SeaORM's `Statement` and read columns off the `QueryResult`. Running the same
 //! SQL as the .NET service keeps resolution behaviour identical.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, QueryResult, Statement};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    QueryResult, Statement,
+};
 use uuid::Uuid;
+
+use super::entities::persons;
 
 /// Resolve the set of `person_id`s whose CURRENT email (latest observation per
 /// source instance) equals `email` within the tenant.
@@ -104,6 +109,25 @@ pub async fn resolve_person_ids_by_source_id(
 
     let rows = db.query_all(stmt).await?;
     person_ids_from_rows(rows)
+}
+
+/// Fetch every observation row for a person within the tenant (all value types,
+/// all sources). The caller collapses them to the current value per attribute.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub async fn fetch_person_observations(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    person_id: Uuid,
+) -> anyhow::Result<Vec<persons::Model>> {
+    let rows = persons::Entity::find()
+        .filter(persons::Column::InsightTenantId.eq(tenant_id.as_bytes().to_vec()))
+        .filter(persons::Column::PersonId.eq(person_id.as_bytes().to_vec()))
+        .all(db)
+        .await?;
+    Ok(rows)
 }
 
 /// Read the `person_id` (`binary(16)`) column off each result row into a `Uuid`.

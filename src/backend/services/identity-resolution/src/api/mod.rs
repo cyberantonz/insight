@@ -40,7 +40,7 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .authenticated()
         .no_license_required()
         .json_request::<handlers::ResolveProfileCommand>(openapi, "Identity to resolve")
-        .json_response_with_schema::<handlers::ProfileIdResponse>(
+        .json_response_with_schema::<handlers::ProfileResponse>(
             openapi,
             StatusCode::OK,
             "Resolved person",
