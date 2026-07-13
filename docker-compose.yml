@@ -213,9 +213,7 @@ services:
       - "--"
       - "/app/insight-api-gateway"
       - "-c"
-      # Auth mode: dev-compose.sh sets API_GATEWAY_CONFIG from AUTH_MODE
-      # (off -> no-auth.yaml, oidc -> insight.yaml). Defaults to no-auth.
-      - "${API_GATEWAY_CONFIG:-/app/config/no-auth.yaml}"
+      - "/app/config/no-auth.yaml"
       - "run"
     ports:
       - "${API_GATEWAY_PORT:-8080}:8080"

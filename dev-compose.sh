@@ -105,9 +105,6 @@ Options:
   --build-only=svc1,svc2    Build only these; everything else from ghcr.
   --frontend-mode=MODE      Override FRONTEND_MODE for this run.
                             (dev | built | ghcr)
-  --auth=MODE               Override AUTH_MODE for this run (off | oidc).
-                            off = no-auth gateway + FE dev-impersonation;
-                            oidc = auth-enforced gateway + OIDC login.
   --no-frontend             Don't start any frontend variant.
   --skip-build              Don't rebuild artefacts — reuse what's
                             already in deploy/compose/build/.
@@ -152,7 +149,6 @@ cmd_up() {
   local from_ghcr_csv=""
   local build_only_csv=""
   local frontend_mode_override=""
-  local auth_mode_override=""
   local skip_build=false
   local no_frontend=false
 
@@ -166,8 +162,6 @@ cmd_up() {
       --build-only)      build_only_csv="$2"; shift 2 ;;
       --frontend-mode=*) frontend_mode_override="${1#*=}"; shift ;;
       --frontend-mode)   frontend_mode_override="$2"; shift 2 ;;
-      --auth=*)          auth_mode_override="${1#*=}"; shift ;;
-      --auth)            auth_mode_override="$2"; shift 2 ;;
       --skip-build)      skip_build=true; shift ;;
       --no-frontend)     no_frontend=true; shift ;;
       --start-airbyte|--start-argo)
@@ -194,35 +188,6 @@ cmd_up() {
 
   [[ -n "$frontend_mode_override" ]] && FRONTEND_MODE="$frontend_mode_override"
   FRONTEND_MODE="${FRONTEND_MODE:-dev}"
-
-  # ── Auth mode: single switch that derives the gateway config + FE login.
-  #   off  = gateway no-auth.yaml + FE dev-impersonation (VITE_DEV_USER_EMAIL).
-  #   oidc = gateway insight.yaml (auth enforced) + FE real OIDC via authenticator.
-  # These exports drive docker-compose's ${API_GATEWAY_CONFIG}, ${OIDC_ISSUER},
-  # ${OIDC_CLIENT_ID}, and ${VITE_DEV_USER_EMAIL}, and enforce that
-  # dev-impersonation and OIDC never coexist (one XOR the other).
-  [[ -n "$auth_mode_override" ]] && AUTH_MODE="$auth_mode_override"
-  AUTH_MODE="${AUTH_MODE:-off}"
-  case "$AUTH_MODE" in
-    off)
-      export API_GATEWAY_CONFIG="/app/config/no-auth.yaml"
-      export OIDC_ISSUER="" OIDC_CLIENT_ID=""
-      export VITE_DEV_USER_EMAIL="${VITE_DEV_USER_EMAIL:-dev@company.nonpresent}"
-      ;;
-    oidc)
-      export API_GATEWAY_CONFIG="/app/config/insight.yaml"
-      export OIDC_ISSUER="${OIDC_ISSUER:-http://localhost:8083}"
-      export OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-insight-authenticator}"
-      export VITE_DEV_USER_EMAIL=""
-      echo "NOTE: AUTH_MODE=oidc — /auth/callback still 500s until the" >&2
-      echo "      authenticator->Identity caller-id fix lands; add" >&2
-      echo "      '127.0.0.1 fakeidp' to /etc/hosts for browser login." >&2
-      ;;
-    *)
-      echo "ERROR: AUTH_MODE must be off|oidc (got: $AUTH_MODE)" >&2
-      return 1
-      ;;
-  esac
 
   # ── Resolve which services go to ghcr ────────────────────────────
   local all_backend="api-gateway analytics identity"
