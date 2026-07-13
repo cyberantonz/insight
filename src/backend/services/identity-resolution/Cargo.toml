@@ -41,5 +41,13 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }
 
-# MariaDB via SeaORM — connection pool now; entities land with the read step.
+# MariaDB via SeaORM — connection pool + entities + raw resolve queries.
 sea-orm = { workspace = true }
+# UUIDs: person_id / tenant / source ids (binary(16) in the DB).
+uuid = { workspace = true }
+
+# HTTP surface: tenant SecurityContext, RFC-9457 canonical errors, OpenAPI schemas.
+toolkit-security = { workspace = true }
+toolkit-canonical-errors = { workspace = true }
+# utoipa pinned to match the `ToSchema` the toolkit OperationBuilder compiles against.
+utoipa = { version = "5.5", features = ["chrono", "uuid"] }

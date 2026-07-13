@@ -5,6 +5,7 @@
 //! .NET service today; we read `persons` / `account_person_map` from it.
 
 pub mod entities;
+pub mod persons_repo;
 
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 

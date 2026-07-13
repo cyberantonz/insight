@@ -56,11 +56,13 @@ impl RestApiCapability for IdentityResolutionGear {
         &self,
         _ctx: &GearCtx,
         router: axum::Router,
-        _openapi: &dyn OpenApiRegistry,
+        openapi: &dyn OpenApiRegistry,
     ) -> anyhow::Result<axum::Router> {
-        // No domain routes yet — return the host router unchanged. The next
-        // steps read `self.state`, then register `POST /v1/profiles` +
-        // `GET /v1/persons/{email}` via the toolkit `OperationBuilder`.
-        Ok(router)
+        let state = self
+            .state
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("identity-resolution gear not initialized"))?
+            .clone();
+        Ok(crate::api::register_routes(router, openapi, state))
     }
 }

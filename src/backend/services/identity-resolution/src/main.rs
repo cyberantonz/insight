@@ -7,6 +7,8 @@
 //! serves `/health`. The read endpoints (`GET /v1/persons/{email}`,
 //! `POST /v1/profiles`) land in the next steps.
 
+mod api;
+mod auth;
 mod config;
 mod gear;
 mod infra;

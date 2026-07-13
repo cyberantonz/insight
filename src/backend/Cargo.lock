@@ -3020,12 +3020,16 @@ dependencies = [
  "cf-gears-static-authz-plugin",
  "cf-gears-tenant-resolver",
  "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "clap",
  "sea-orm",
  "serde",
  "tokio",
  "tracing",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]
