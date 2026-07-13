@@ -10,6 +10,7 @@
 mod api;
 mod auth;
 mod config;
+mod domain;
 mod gear;
 mod infra;
 

@@ -37,6 +37,7 @@ clap = { workspace = true }
 # Domain gear: config deserialization, async trait impls, HTTP router type,
 # and logging. (DB/serde-heavy deps — sea-orm, uuid — land with the DB step.)
 serde = { workspace = true }
+serde_json = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }

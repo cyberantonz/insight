@@ -9,21 +9,11 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use sea_orm::DatabaseConnection;
 use toolkit::api::OpenApiRegistry;
 use toolkit::{Gear, GearCtx, RestApiCapability};
 
+use crate::api::AppState;
 use crate::config::GearConfig;
-
-/// Shared application state. Injected into handlers once we add routes.
-#[derive(Clone)]
-pub struct AppState {
-    /// MariaDB connection pool (SeaORM) — reads `persons` / `account_person_map`.
-    #[allow(dead_code)] // consumed once the read handlers are wired
-    pub db: DatabaseConnection,
-    #[allow(dead_code)] // consumed once handlers need runtime config
-    pub config: GearConfig,
-}
 
 /// Identity-resolution gear. Capability: `rest` (HTTP surface). Config key is
 /// the gear name `identity-resolution`; env overrides are

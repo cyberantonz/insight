@@ -1,5 +1,6 @@
-//! HTTP API layer — route table + handlers.
+//! HTTP API layer — shared state, route table, extractors.
 
+pub(crate) mod canonical_json;
 pub mod error;
 mod handlers;
 
@@ -9,10 +10,22 @@ use axum::Extension;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::middleware::from_fn;
+use sea_orm::DatabaseConnection;
 use toolkit::api::{OpenApiRegistry, OperationBuilder};
 
 use crate::auth;
-use crate::gear::AppState;
+use crate::config::GearConfig;
+use crate::domain::profile;
+
+/// Shared application state, injected into handlers via `Extension`.
+#[derive(Clone)]
+pub struct AppState {
+    /// MariaDB connection pool (SeaORM) — reads `persons` / `account_person_map`.
+    pub db: DatabaseConnection,
+    /// Gear config, retained for future runtime use.
+    #[allow(dead_code)]
+    pub config: GearConfig,
+}
 
 /// Mount the identity-resolution routes onto the host's router.
 ///
@@ -39,8 +52,8 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Resolve a profile by email or source-native id")
         .authenticated()
         .no_license_required()
-        .json_request::<handlers::ResolveProfileCommand>(openapi, "Identity to resolve")
-        .json_response_with_schema::<handlers::ProfileResponse>(
+        .json_request::<profile::ResolveProfileCommand>(openapi, "Identity to resolve")
+        .json_response_with_schema::<profile::ProfileResponse>(
             openapi,
             StatusCode::OK,
             "Resolved person",

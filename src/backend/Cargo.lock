@@ -3026,6 +3026,7 @@ dependencies = [
  "clap",
  "sea-orm",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "utoipa",
