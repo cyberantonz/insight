@@ -29,12 +29,8 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> dev ES256 signing key"
-# Isolated key dir (mktemp) so this never touches the compose dev key at
-# deploy/compose/authenticator-dev-keys/. ec_param_enc:named_curve keeps the
-# key loadable on macOS LibreSSL (explicit EC params fail the p256 loader) —
-# same encoding dev-compose.sh's ensure_authenticator_dev_key uses.
 KEYS_DIR="$(mktemp -d)"
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve -out "$KEYS_DIR/current.pem"
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$KEYS_DIR/current.pem"
 
 echo "==> Redis"
 docker rm -f "$REDIS_CT" >/dev/null 2>&1 || true
