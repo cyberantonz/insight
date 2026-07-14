@@ -188,6 +188,17 @@ schema_status
 schema_error_code
 ```
 
+`unit` is a display suffix for formats that do not fully determine
+presentation on their own (e.g. `"lines"`, `"days"`, `"h"`). `percent` and
+`currency` are presentation-complete — the frontend renders `%` or a
+currency symbol from `format` alone and never consults `unit` for these two
+formats — so `unit` must be `None` for any metric with one of those two
+formats. Pinned by a builtin registry test
+(`presentation_complete_formats_carry_no_unit`); a future format-as-union
+refactor (folding unit into format-specific variants) would make this
+invalid by construction, but is not warranted while the registry test
+enforces it and only builtins populate the table.
+
 `metric_definition_inputs` maps input roles to source measures:
 
 ```text

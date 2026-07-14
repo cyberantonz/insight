@@ -264,7 +264,7 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         label: "AI tool acceptance",
         description: Some("Accepted divided by offered AI edits"),
         explanation: Some("Accepted AI edit or tool suggestions divided by offered suggestions."),
-        unit: Some("percent"),
+        unit: None,
         format: MetricFormat::Percent,
         direction: MetricDirection::HigherIsBetter,
         entity_type: EntityType::Person,
@@ -464,7 +464,7 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         explanation: Some(
             "Of the pull requests created in the period, the share that have merged. Requests opened near the end of the period may not have merged yet, which lowers the rate at period edges.",
         ),
-        unit: Some("percent"),
+        unit: None,
         format: MetricFormat::Percent,
         direction: MetricDirection::HigherIsBetter,
         entity_type: EntityType::Person,
@@ -615,7 +615,7 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         explanation: Some(
             "Direct and group-chat messages divided by all chat messages. A lower ratio means more communication happens in open channels. Tools that do not distinguish message types report no value.",
         ),
-        unit: Some("%"),
+        unit: None,
         format: MetricFormat::Percent,
         direction: MetricDirection::LowerIsBetter,
         entity_type: EntityType::Person,
@@ -873,7 +873,7 @@ pub const BUILTIN_METRICS: &[MetricSeed] = &[
         explanation: Some(
             "Share of the workday not spent in meetings: meeting-free hours divided by scheduled working hours. Scheduled hours default to a nominal eight-hour day where an HR source does not provide them.",
         ),
-        unit: Some("%"),
+        unit: None,
         format: MetricFormat::Percent,
         direction: MetricDirection::HigherIsBetter,
         entity_type: EntityType::Person,
@@ -1141,6 +1141,26 @@ mod tests {
                 MetricInputRole::Value,
                 "{}",
                 metric.metric_key
+            );
+        }
+    }
+
+    // Percent and currency formats are presentation-complete: the FE's
+    // formatMetricValue/metricDisplayUnit always render "%" or a currency
+    // symbol from `format` alone and never consult `unit` for these two
+    // formats. A unit string here is therefore dead config that only invites
+    // drift (e.g. "percent" vs "%" for the same format) — keep it None.
+    #[test]
+    fn presentation_complete_formats_carry_no_unit() {
+        for metric in BUILTIN_METRICS {
+            if !matches!(metric.format, MetricFormat::Percent | MetricFormat::Currency) {
+                continue;
+            }
+            assert!(
+                metric.unit.is_none(),
+                "{} has format {:?}, which renders without consulting unit; unit must be None",
+                metric.metric_key,
+                metric.format
             );
         }
     }
