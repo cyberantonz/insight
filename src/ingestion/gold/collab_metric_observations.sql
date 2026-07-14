@@ -32,23 +32,28 @@
 --                    files_engaged, files_shared_internal/external,
 --                    meeting_hours, meetings_attended/organized,
 --                    adhoc/scheduled_meetings_attended
+--   day-grain sums (per scope):  files_shared (recipient scope
+--                    internal/external — the combined files-shared total
+--                    with a scope breakdown)
 --   day-grain presence (per tool): chat_active_day (days with chat
 --                    messages — the messages-per-active-day denominator,
 --                    matching the day set its numerator draws from)
 --   day-grain sums (no tool):    focus_hours, working_hours (HR-derived);
---                    meeting_free_day (0/1 on every meeting-record day —
---                    a measured 0 for people in meetings daily, never
---                    conflated with missing coverage)
+--                    meeting_free_day (0/1 on every deliberately-active
+--                    day — a measured 0 for people in meetings daily,
+--                    never conflated with missing coverage)
 --   distinct-count subjects:     active_day (subject = date, per tool),
---                    active_tool (subject = tool)
+--                    active_modality (subject = modality)
 --
 -- Distinct-count measures carry a `subject_key`; the other macros do not, so
 -- they are unioned in a separate branch that stamps subject_key = NULL on the
 -- value/presence measures at the final projection.
 --
--- Attribution: every measure keys on the class `person_key` (lower(email),
--- falling back to lower(user_id) where a source has no email). Rows with an
--- empty person_key are excluded — honest absence.
+-- Attribution: every measure keys on the class `person_key`, and only
+-- email-shaped keys pass. The class contract falls back to lower(user_id)
+-- where a source has no email (Slack), but cohorts and API requests address
+-- people by email — a user-id key can never match either, so those rows are
+-- excluded as unmatchable rather than carried as dead entities.
 --
 -- `focus_hours` / `working_hours` come from class_focus_metrics, which joins
 -- HR scheduled hours. focus_time_pct is their ratio (× 100). Working hours
@@ -70,16 +75,17 @@
 -- rows (see metrics DESIGN, "Peer measurability"). Each measure's emission
 -- gate is therefore a deliberate semantic choice:
 --   * value-gated (rows whenever the source reports the person, zeros
---     included): all volume counts (messages, emails, files, meetings) and
---     meeting_free_day. A reported zero is a real behavioral observation —
---     a person in meetings every day, a quiet email week — and belongs in
---     peer pools.
+--     included): all volume counts (messages, emails, files, meetings).
+--     A reported zero is a real behavioral observation — a quiet email
+--     week — and belongs in peer pools.
 --   * engagement-gated (rows only on deliberate activity): active_day,
---     active_tool, chat_active_day. A zero here would mean non-engagement
---     (rostered accounts with no activity: leavers, leave, service
---     accounts), which would drag peer medians toward zero and rank absent
---     people; pools compare engaged users among engaged users, matching
---     the ai/git activity metrics on the same dashboard.
+--     active_modality, chat_active_day, and meeting_free_day (0/1 per
+--     active day — "worked uninterrupted" is only defined on days the
+--     person worked). A zero here would mean non-engagement (rostered
+--     accounts with no activity: leavers, leave, service accounts), which
+--     would drag peer medians toward zero and rank absent people; pools
+--     compare engaged users among engaged users, matching the ai/git
+--     activity metrics on the same dashboard.
 -- Changing a gate re-ranks every peer standing for that metric — make it
 -- an explicit decision, never a side effect of a connector reshaping its
 -- emission.
@@ -92,15 +98,16 @@ chat_source AS (
         date AS metric_date,
         total_chat_messages,
         channel_posts,
+        channel_replies,
         direct_and_group_messages,
         replaceOne(data_source, 'insight_', '') AS tool_value,
-        {{ collab_tool_label('tool_value') }} AS tool_label,
+        {{ collab_tool_label('tool_value', m365_label='Microsoft Teams') }} AS tool_label,
         CAST(
             [tuple('tool', tool_value, tool_label)]
             AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS tool_dimensions
     FROM {{ ref('class_collab_chat_activity') }} FINAL
-    WHERE person_key != ''
+    WHERE person_key LIKE '%@%'
       AND date IS NOT NULL
 ),
 meeting_source AS (
@@ -116,13 +123,13 @@ meeting_source AS (
         video_duration_seconds,
         screen_share_duration_seconds,
         replaceOne(data_source, 'insight_', '') AS tool_value,
-        {{ collab_tool_label('tool_value') }} AS tool_label,
+        {{ collab_tool_label('tool_value', m365_label='Microsoft Teams') }} AS tool_label,
         CAST(
             [tuple('tool', tool_value, tool_label)]
             AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS tool_dimensions
     FROM {{ ref('class_collab_meeting_activity') }} FINAL
-    WHERE person_key != ''
+    WHERE person_key LIKE '%@%'
       AND date IS NOT NULL
 ),
 email_source AS (
@@ -140,7 +147,7 @@ email_source AS (
             AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS tool_dimensions
     FROM {{ ref('class_collab_email_activity') }} FINAL
-    WHERE person_key != ''
+    WHERE person_key LIKE '%@%'
       AND date IS NOT NULL
 ),
 document_source AS (
@@ -156,9 +163,19 @@ document_source AS (
         CAST(
             [tuple('tool', tool_value, tool_label)]
             AS Array(Tuple(key String, value String, label Nullable(String)))
-        ) AS tool_dimensions
+        ) AS tool_dimensions,
+        -- Recipient-scope dimension for the combined files_shared measure
+        -- (static product vocabulary, like the tool labels).
+        CAST(
+            [tuple('scope', 'internal', 'Internal')]
+            AS Array(Tuple(key String, value String, label Nullable(String)))
+        ) AS internal_scope_dimensions,
+        CAST(
+            [tuple('scope', 'external', 'External')]
+            AS Array(Tuple(key String, value String, label Nullable(String)))
+        ) AS external_scope_dimensions
     FROM {{ ref('class_collab_document_activity') }} FINAL
-    WHERE person_key != ''
+    WHERE person_key LIKE '%@%'
       AND date IS NOT NULL
 ),
 focus_source AS (
@@ -170,67 +187,99 @@ focus_source AS (
         working_hours_per_day,
         CAST([] AS Array(Tuple(key String, value String, label Nullable(String)))) AS no_dimensions
     FROM {{ ref('class_focus_metrics') }} FINAL
-    WHERE email != ''
+    WHERE email LIKE '%@%'
       AND day IS NOT NULL
 ),
 -- A day/tool is active on a deliberate signal only (a message or email sent,
 -- a file engaged or shared, a meeting attended); passive email received/read
--- is excluded. Deduped to one row per (tenant, entity, date, tool) so a day
--- active in several ways counts once.
+-- is excluded. Deduped to one row per (tenant, entity, date, tool) and
+-- re-labelled with the canonical suite label: the runtime groups breakdowns
+-- by (value, label), so carrying the per-surface labels (Teams vs
+-- Microsoft 365) across this union would split one m365 platform into two
+-- active_day groups.
 deliberate_activity AS (
-    SELECT DISTINCT
+    SELECT
         tenant_id,
         entity_id,
         metric_date,
         tool_value,
-        tool_dimensions,
+        modality,
+        CAST(
+            [tuple('tool', tool_value, {{ collab_tool_label('tool_value') }})]
+            AS Array(Tuple(key String, value String, label Nullable(String)))
+        ) AS tool_dimensions,
         CAST([] AS Array(Tuple(key String, value String, label Nullable(String)))) AS no_dimensions
     FROM (
-        SELECT tenant_id, entity_id, metric_date, tool_value, tool_dimensions
-        FROM chat_source
-        WHERE total_chat_messages > 0
-        UNION ALL
-        SELECT tenant_id, entity_id, metric_date, tool_value, tool_dimensions
-        FROM email_source
-        WHERE sent_count > 0
-        UNION ALL
-        SELECT tenant_id, entity_id, metric_date, tool_value, tool_dimensions
-        FROM document_source
-        WHERE viewed_or_edited_count > 0
-           OR shared_internally_count > 0
-           OR shared_externally_count > 0
-        UNION ALL
-        SELECT tenant_id, entity_id, metric_date, tool_value, tool_dimensions
-        FROM meeting_source
-        WHERE meetings_attended > 0
+        SELECT DISTINCT tenant_id, entity_id, metric_date, tool_value, modality
+        FROM (
+            SELECT tenant_id, entity_id, metric_date, tool_value, 'chat' AS modality
+            FROM chat_source
+            WHERE total_chat_messages > 0
+            UNION ALL
+            SELECT tenant_id, entity_id, metric_date, tool_value, 'email' AS modality
+            FROM email_source
+            WHERE sent_count > 0
+            UNION ALL
+            SELECT tenant_id, entity_id, metric_date, tool_value, 'documents' AS modality
+            FROM document_source
+            WHERE viewed_or_edited_count > 0
+               OR shared_internally_count > 0
+               OR shared_externally_count > 0
+            UNION ALL
+            SELECT tenant_id, entity_id, metric_date, tool_value, 'meetings' AS modality
+            FROM meeting_source
+            WHERE meetings_attended > 0
+        )
     )
 ),
--- A meeting-free day: the person has a meeting record but zero meeting time
--- across all meeting tools that day. Emitted as a 0/1 value on EVERY
--- meeting-record day (not presence-only rows on qualifying days): a person
--- in meetings every recorded day must read as a measured 0 — in peer pools,
--- scored — not collapse into the same no-rows state as a person with no
--- meeting-tool coverage at all.
+-- A meeting-free day: a DELIBERATELY-ACTIVE day (any modality) with zero
+-- meeting time across every meeting tool. Anchoring on activity rather than
+-- meeting records keeps the metric defined for people whose meeting tool
+-- only writes rows on attendance (Zoom), and reads as "worked uninterrupted"
+-- rather than "had an empty meeting report". Emitted as a 0/1 value on every
+-- active day: a person in meetings every working day is a measured 0 — in
+-- peer pools, scored — never conflated with a person who wasn't active at
+-- all. Join-free: active-day markers and meeting seconds union into one
+-- day-grain aggregate.
 meeting_free_source AS (
     SELECT
         tenant_id,
         entity_id,
         metric_date,
-        if(sum(
-            ifNull(audio_duration_seconds, 0)
-            + ifNull(video_duration_seconds, 0)
-            + ifNull(screen_share_duration_seconds, 0)
-        ) = 0, 1, 0) AS meeting_free_flag,
+        if(sum(meeting_seconds) = 0, 1, 0) AS meeting_free_flag,
         CAST([] AS Array(Tuple(key String, value String, label Nullable(String)))) AS no_dimensions
-    FROM meeting_source
+    FROM (
+        SELECT DISTINCT
+            tenant_id,
+            entity_id,
+            metric_date,
+            0 AS meeting_seconds,
+            1 AS is_active
+        FROM deliberate_activity
+        UNION ALL
+        SELECT
+            tenant_id,
+            entity_id,
+            metric_date,
+            ifNull(audio_duration_seconds, 0)
+                + ifNull(video_duration_seconds, 0)
+                + ifNull(screen_share_duration_seconds, 0) AS meeting_seconds,
+            0 AS is_active
+        FROM meeting_source
+    )
     GROUP BY tenant_id, entity_id, metric_date
+    HAVING max(is_active) = 1
 ),
 value_measures AS (
     {{ sum_measure('total_chat_messages', 'chat_source', 'total_chat_messages', 'tool_dimensions') }}
 
     UNION ALL
 
-    {{ sum_measure('channel_posts', 'chat_source', 'channel_posts', 'tool_dimensions') }}
+    -- Posts + thread replies: Slack folds replies into channel_posts (it
+    -- cannot split them; channel_replies is NULL), M365 reports them apart —
+    -- adding both keeps the count comparable across tools. NULL channel_posts
+    -- (Zulip) stays NULL: the addition never resurrects an absent source.
+    {{ sum_measure('channel_posts', 'chat_source', 'channel_posts + ifNull(channel_replies, 0)', 'tool_dimensions') }}
 
     UNION ALL
 
@@ -259,6 +308,18 @@ value_measures AS (
     UNION ALL
 
     {{ sum_measure('files_shared_external', 'document_source', 'shared_externally_count', 'tool_dimensions') }}
+
+    UNION ALL
+
+    -- Combined files-shared total with a recipient-scope breakdown: the same
+    -- measure emitted once per scope (mirrors ai's cost_usd emitted from two
+    -- relations). Unfiltered queries sum both scopes; a scope breakdown
+    -- splits them.
+    {{ sum_measure('files_shared', 'document_source', 'shared_internally_count', 'internal_scope_dimensions') }}
+
+    UNION ALL
+
+    {{ sum_measure('files_shared', 'document_source', 'shared_externally_count', 'external_scope_dimensions') }}
 
     UNION ALL
 
@@ -305,12 +366,35 @@ value_measures AS (
 
     {{ sum_measure('meeting_free_day', 'meeting_free_source', 'meeting_free_flag', 'no_dimensions') }}
 ),
+-- distinct_measure emits one row per source row, so each emission dedups
+-- deliberate_activity (tool x modality grain) to its own grain first:
+-- active_day to (entity, date, tool), active_modality to (entity, date,
+-- modality) — otherwise a chat+email day duplicates active_day rows and a
+-- two-tool modality duplicates active_modality rows, violating the
+-- published unique-grain contract.
+active_day_grain AS (
+    SELECT DISTINCT
+        tenant_id,
+        entity_id,
+        metric_date,
+        tool_dimensions
+    FROM deliberate_activity
+),
+active_modality_grain AS (
+    SELECT DISTINCT
+        tenant_id,
+        entity_id,
+        metric_date,
+        modality,
+        no_dimensions
+    FROM deliberate_activity
+),
 subject_measures AS (
-    {{ distinct_measure('active_day', 'deliberate_activity', 'metric_date', 'tool_dimensions') }}
+    {{ distinct_measure('active_day', 'active_day_grain', 'metric_date', 'tool_dimensions') }}
 
     UNION ALL
 
-    {{ distinct_measure('active_tool', 'deliberate_activity', 'tool_value', 'no_dimensions') }}
+    {{ distinct_measure('active_modality', 'active_modality_grain', 'modality', 'no_dimensions') }}
 )
 SELECT
     assumeNotNull(tenant_id) AS tenant_id,
