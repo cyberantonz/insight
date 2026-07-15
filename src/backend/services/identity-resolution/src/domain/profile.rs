@@ -64,10 +64,36 @@ pub struct ProfileResponse {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_person_id: Option<Uuid>,
+    /// Recursive subordinates subtree (direct reports and their reports), on the
+    /// configured `org_chart` source. Always serialized (empty when none).
+    pub subordinates: Vec<PersonResponse>,
     /// Every current source-native id for the person (one per source instance).
     /// Always serialized — an empty array when the person has no ids — matching
     /// the .NET contract (unlike the attributes above, which are omitted).
     pub ids: Vec<ProfileIdEntry>,
+}
+
+/// A person node in the org tree (subordinate of a profile), matching the .NET
+/// `PersonResponse`. Unlike `ProfileResponse`, the attribute fields are plain
+/// strings (empty when absent, not omitted) and the `supervisor_*`/`parent_*`
+/// fields serialize as `null` rather than being dropped.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PersonResponse {
+    pub person_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub department: String,
+    pub division: String,
+    pub job_title: String,
+    pub status: String,
+    pub supervisor_email: Option<String>,
+    pub supervisor_name: Option<String>,
+    pub parent_email: Option<String>,
+    pub parent_id: Option<String>,
+    pub parent_person_id: Option<Uuid>,
+    pub subordinates: Vec<PersonResponse>,
 }
 
 /// One source-native account id bound to the person — the latest
@@ -106,6 +132,7 @@ pub fn assemble_profile(
     observations: Vec<persons::Model>,
     source_ids: Vec<SourceIdRow>,
     parent: Option<ParentProjection>,
+    subordinates: Vec<PersonResponse>,
 ) -> ProfileResponse {
     let latest = latest_values(observations);
     let get = |value_type: &str| latest.get(value_type).cloned();
@@ -165,7 +192,60 @@ pub fn assemble_profile(
         parent_email,
         parent_id,
         parent_person_id,
+        subordinates,
         ids,
+    }
+}
+
+/// Assemble a subordinate `PersonResponse` from its observations, parent edge,
+/// and already-hydrated child subtree. Mirrors the .NET `PersonAssembler`:
+/// attribute fields default to the empty string (not omitted), and the
+/// display-name split fallback applies here too.
+#[must_use]
+pub fn assemble_person(
+    person_id: Uuid,
+    observations: Vec<persons::Model>,
+    parent: Option<ParentProjection>,
+    subordinates: Vec<PersonResponse>,
+) -> PersonResponse {
+    let latest = latest_values(observations);
+    let get = |value_type: &str| latest.get(value_type).cloned().unwrap_or_default();
+
+    let display_name = get("display_name");
+    let mut first_name = get("first_name");
+    let mut last_name = get("last_name");
+    if first_name.is_empty() && last_name.is_empty() && !display_name.is_empty() {
+        (first_name, last_name) = split_display_name(&display_name);
+    }
+
+    let (supervisor_email, supervisor_name, parent_email, parent_id, parent_person_id) =
+        match parent {
+            Some(p) => (
+                p.email.clone(),
+                p.display_name,
+                p.email,
+                p.source_native_id.and_then(non_blank),
+                Some(p.person_id),
+            ),
+            None => (None, None, None, None, None),
+        };
+
+    PersonResponse {
+        person_id,
+        email: get("email"),
+        display_name,
+        first_name,
+        last_name,
+        department: get("department"),
+        division: get("division"),
+        job_title: get("job_title"),
+        status: get("status"),
+        supervisor_email,
+        supervisor_name,
+        parent_email,
+        parent_id,
+        parent_person_id,
+        subordinates,
     }
 }
 
@@ -260,6 +340,7 @@ mod tests {
             ],
             vec![],
             None,
+            Vec::new(),
         );
 
         assert_eq!(profile.person_id, person_id);
@@ -281,6 +362,7 @@ mod tests {
             ],
             vec![],
             None,
+            Vec::new(),
         );
 
         assert_eq!(profile.email.as_deref(), Some("a@b.com"));
@@ -309,6 +391,7 @@ mod tests {
             ],
             vec![],
             None,
+            Vec::new(),
         );
 
         assert_eq!(profile.first_name.as_deref(), Some("Ann"));
@@ -336,6 +419,7 @@ mod tests {
             vec![low.clone(), high.clone()],
             vec![],
             None,
+            Vec::new(),
         );
         let b = assemble_profile(
             Uuid::from_u128(1),
@@ -343,6 +427,7 @@ mod tests {
             vec![high, low],
             vec![],
             None,
+            Vec::new(),
         );
 
         assert_eq!(a.email.as_deref(), Some("high-id@example.com"));
@@ -370,6 +455,7 @@ mod tests {
                 },
             ],
             None,
+            Vec::new(),
         );
 
         assert_eq!(profile.ids.len(), 2);
@@ -389,6 +475,7 @@ mod tests {
             vec![obs("email", "a@b.com", t)],
             vec![],
             None,
+            Vec::new(),
         );
         assert!(profile.ids.is_empty());
         Ok(())
@@ -409,6 +496,7 @@ mod tests {
             vec![obs("email", "a@b.com", t)],
             vec![],
             Some(parent),
+            Vec::new(),
         );
 
         // supervisor_* and legacy parent_* mirror the single edge.
@@ -432,6 +520,7 @@ mod tests {
             vec![obs("email", "a@b.com", t)],
             vec![],
             None,
+            Vec::new(),
         );
         assert_eq!(profile.supervisor_email, None);
         assert_eq!(profile.parent_person_id, None);
@@ -449,6 +538,7 @@ mod tests {
             vec![obs("display_name", "Ann Smith", t)],
             vec![],
             None,
+            Vec::new(),
         );
         assert_eq!(split.first_name.as_deref(), Some("Ann"));
         assert_eq!(split.last_name.as_deref(), Some("Smith"));
@@ -460,6 +550,7 @@ mod tests {
             vec![obs("display_name", "Smith, Ann", t)],
             vec![],
             None,
+            Vec::new(),
         );
         assert_eq!(comma.first_name.as_deref(), Some("Ann"));
         assert_eq!(comma.last_name.as_deref(), Some("Smith"));
@@ -474,9 +565,61 @@ mod tests {
             ],
             vec![],
             None,
+            Vec::new(),
         );
         assert_eq!(explicit.first_name.as_deref(), Some("Annie"));
         assert_eq!(explicit.last_name, None);
+        Ok(())
+    }
+
+    #[test]
+    fn assemble_person_uses_empty_strings_and_carries_subordinates() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let leaf = assemble_person(
+            Uuid::from_u128(30),
+            vec![obs("email", "leaf@example.com", t)],
+            None,
+            Vec::new(),
+        );
+        // Absent attributes are empty strings (not omitted), per .NET PersonResponse.
+        assert_eq!(leaf.email, "leaf@example.com");
+        assert_eq!(leaf.department, "");
+        assert_eq!(leaf.first_name, "");
+        assert!(leaf.subordinates.is_empty());
+
+        // Display-name split fallback applies to person nodes too.
+        let mid = assemble_person(
+            Uuid::from_u128(20),
+            vec![obs("display_name", "Mid Manager", t)],
+            None,
+            vec![leaf],
+        );
+        assert_eq!(mid.first_name, "Mid");
+        assert_eq!(mid.last_name, "Manager");
+        assert_eq!(mid.subordinates.len(), 1);
+        assert_eq!(mid.subordinates[0].person_id, Uuid::from_u128(30));
+        Ok(())
+    }
+
+    #[test]
+    fn profile_carries_subordinates() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let sub = assemble_person(
+            Uuid::from_u128(30),
+            vec![obs("email", "s@e.com", t)],
+            None,
+            Vec::new(),
+        );
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("email", "a@b.com", t)],
+            vec![],
+            None,
+            vec![sub],
+        );
+        assert_eq!(profile.subordinates.len(), 1);
+        assert_eq!(profile.subordinates[0].person_id, Uuid::from_u128(30));
         Ok(())
     }
 }

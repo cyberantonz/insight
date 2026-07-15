@@ -258,6 +258,57 @@ pub async fn current_parents_for_child(
     Ok(edges)
 }
 
+/// One current child edge for a parent (repo-level row). Only the fields the
+/// subordinates expansion needs: the source it came from and the child id.
+pub struct OrgChartChildEdge {
+    pub source_type: String,
+    pub child_person_id: Uuid,
+}
+
+/// Current direct-children edges for one parent (`valid_to IS NULL`), across
+/// every source instance, ordered by source then child. The caller filters to
+/// the configured source and de-dupes. Ported from
+/// `Sql.OrgChart.cs::CurrentChildrenForParent`.
+///
+/// # Errors
+///
+/// Returns an error if the query fails or a stored id column is not 16 bytes.
+pub async fn current_children_for_parent(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    parent_person_id: Uuid,
+) -> anyhow::Result<Vec<OrgChartChildEdge>> {
+    const SQL: &str = r"
+        SELECT insight_source_type, child_person_id
+        FROM org_chart
+        WHERE insight_tenant_id  = ?
+          AND parent_person_id   = ?
+          AND valid_to IS NULL
+        ORDER BY insight_source_type, insight_source_id, child_person_id
+    ";
+
+    let stmt = Statement::from_sql_and_values(
+        DbBackend::MySql,
+        SQL,
+        [
+            tenant_id.as_bytes().to_vec().into(),
+            parent_person_id.as_bytes().to_vec().into(),
+        ],
+    );
+
+    let rows = db.query_all(stmt).await?;
+    let mut edges = Vec::with_capacity(rows.len());
+    for row in rows {
+        let source_type: String = row.try_get("", "insight_source_type")?;
+        let child_person_id: Vec<u8> = row.try_get("", "child_person_id")?;
+        edges.push(OrgChartChildEdge {
+            source_type,
+            child_person_id: Uuid::from_slice(&child_person_id)?,
+        });
+    }
+    Ok(edges)
+}
+
 /// Read the `person_id` (`binary(16)`) column off each result row into a `Uuid`.
 fn person_ids_from_rows(rows: Vec<QueryResult>) -> anyhow::Result<Vec<Uuid>> {
     let mut person_ids = Vec::with_capacity(rows.len());

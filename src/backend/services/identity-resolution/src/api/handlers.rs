@@ -3,6 +3,9 @@
 //! `/health` + `/healthz` + `/docs` are provided by the api-gateway host gear,
 //! so this service defines no health handler.
 
+use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Json;
@@ -16,7 +19,8 @@ use super::AppState;
 use super::canonical_json::CanonicalJson;
 use super::error::ProfileError;
 use crate::domain::profile::{
-    ParentProjection, ResolveProfileCommand, assemble_profile, latest_values,
+    ParentProjection, PersonResponse, ResolveProfileCommand, assemble_person, assemble_profile,
+    latest_values,
 };
 use crate::infra::db::persons_repo;
 
@@ -54,12 +58,14 @@ pub async fn resolve_profile(
                         CanonicalError::internal("profile assembly failed").create()
                     })?;
             let parent = resolve_parent(&state, tenant, *person_id).await?;
+            let subordinates = resolve_subordinates(&state, tenant, *person_id).await?;
             Ok(Json(assemble_profile(
                 *person_id,
                 tenant,
                 observations,
                 source_ids,
                 parent,
+                subordinates,
             )))
         }
         _ => Err(ProfileError::aborted("email resolves to multiple persons")
@@ -204,4 +210,97 @@ async fn resolve_parent(
         display_name: latest.get("display_name").cloned(),
         source_native_id,
     }))
+}
+
+/// Hydrate the recursive subordinates subtree for a resolved profile. The root
+/// is pre-seeded into `visited` so a child edge pointing back at it can't loop.
+async fn resolve_subordinates(
+    state: &AppState,
+    tenant: Uuid,
+    root_person_id: Uuid,
+) -> Result<Vec<PersonResponse>, CanonicalError> {
+    if !state.config.expand_subordinates {
+        return Ok(Vec::new());
+    }
+    let mut visited = HashSet::new();
+    visited.insert(root_person_id);
+    hydrate_children(state, tenant, root_person_id, 0, &mut visited).await
+}
+
+/// Expand the direct children of `person_id` (at tree depth `depth`) into person
+/// nodes, recursing while below the configured depth cap. Children are the
+/// distinct `org_chart` child ids on the configured source, in query order.
+///
+/// Returns a boxed future: `hydrate_children` and `hydrate_person` are mutually
+/// recursive `async fn`s, which Rust cannot size without an explicit `Box::pin`.
+fn hydrate_children<'a>(
+    state: &'a AppState,
+    tenant: Uuid,
+    person_id: Uuid,
+    depth: usize,
+    visited: &'a mut HashSet<Uuid>,
+) -> Pin<Box<dyn Future<Output = Result<Vec<PersonResponse>, CanonicalError>> + Send + 'a>> {
+    Box::pin(async move {
+        if depth >= state.config.max_depth {
+            return Ok(Vec::new());
+        }
+        let source_type = &state.config.org_chart_source_type;
+        let edges = persons_repo::current_children_for_parent(&state.db, tenant, person_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "fetch child edges failed");
+                CanonicalError::internal("profile assembly failed").create()
+            })?;
+
+        // Distinct child ids on the configured source, preserving query order.
+        let mut seen = HashSet::new();
+        let child_ids: Vec<Uuid> = edges
+            .into_iter()
+            .filter(|e| &e.source_type == source_type)
+            .map(|e| e.child_person_id)
+            .filter(|id| seen.insert(*id))
+            .collect();
+
+        let mut subordinates = Vec::new();
+        for child_id in child_ids {
+            if let Some(node) = hydrate_person(state, tenant, child_id, depth + 1, visited).await? {
+                subordinates.push(node);
+            }
+        }
+        Ok(subordinates)
+    })
+}
+
+/// Build one person node at tree depth `depth`, recursing into its own children.
+/// Returns `None` when the person is already on the current path (cycle guard)
+/// or has no observations.
+fn hydrate_person<'a>(
+    state: &'a AppState,
+    tenant: Uuid,
+    person_id: Uuid,
+    depth: usize,
+    visited: &'a mut HashSet<Uuid>,
+) -> Pin<Box<dyn Future<Output = Result<Option<PersonResponse>, CanonicalError>> + Send + 'a>> {
+    Box::pin(async move {
+        if !visited.insert(person_id) {
+            return Ok(None);
+        }
+        let observations = persons_repo::fetch_person_observations(&state.db, tenant, person_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "fetch subordinate observations failed");
+                CanonicalError::internal("profile assembly failed").create()
+            })?;
+        if observations.is_empty() {
+            return Ok(None);
+        }
+        let parent = resolve_parent(state, tenant, person_id).await?;
+        let subordinates = hydrate_children(state, tenant, person_id, depth, visited).await?;
+        Ok(Some(assemble_person(
+            person_id,
+            observations,
+            parent,
+            subordinates,
+        )))
+    })
 }
