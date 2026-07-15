@@ -25,9 +25,11 @@ pub struct ResolveProfileCommand {
     pub insight_source_id: Option<Uuid>,
 }
 
-/// Response body of `POST /v1/profiles` — the resolved person's profile.
-/// Attributes only for now; `ids[]` and the org tree (supervisor / parent /
-/// subordinates) land in follow-up steps. Null fields are omitted from JSON.
+/// Response body of `POST /v1/profiles` — the resolved person's profile:
+/// current attributes, the org tree (`supervisor_*` / `parent_*` /
+/// `subordinates[]`), and every current source-native id (`ids[]`). Null
+/// attribute fields are omitted from JSON; `subordinates`/`ids` are always
+/// present (empty when none), matching the .NET contract.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ProfileResponse {
     pub person_id: Uuid,

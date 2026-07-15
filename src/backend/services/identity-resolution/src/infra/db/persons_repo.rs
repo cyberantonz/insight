@@ -379,22 +379,26 @@ mod tests {
     use crate::infra::db;
 
     /// Integration test against a live MariaDB. Data-dependent (dev cluster).
-    /// Set `IDENTITY_TEST_DB_URL` + `IDENTITY_TEST_TENANT_ID` (and a MariaDB
-    /// port-forward) to run; skips cleanly otherwise so CI stays green.
+    /// Set `IDENTITY_TEST_DB_URL` + `IDENTITY_TEST_TENANT_ID` + `IDENTITY_TEST_EMAIL`
+    /// (a known email in that tenant) and a MariaDB port-forward to run; skips
+    /// cleanly otherwise so CI stays green. The email is not hardcoded so the
+    /// test carries no real address and isn't tied to one person.
     #[tokio::test]
     async fn resolve_by_email_against_dev_db() -> anyhow::Result<()> {
-        let (Ok(url), Ok(tenant_raw)) = (
+        let (Ok(url), Ok(tenant_raw), Ok(known_email)) = (
             std::env::var("IDENTITY_TEST_DB_URL"),
             std::env::var("IDENTITY_TEST_TENANT_ID"),
+            std::env::var("IDENTITY_TEST_EMAIL"),
         ) else {
-            eprintln!("skip: set IDENTITY_TEST_DB_URL + IDENTITY_TEST_TENANT_ID to run");
+            eprintln!(
+                "skip: set IDENTITY_TEST_DB_URL + IDENTITY_TEST_TENANT_ID + IDENTITY_TEST_EMAIL to run"
+            );
             return Ok(());
         };
         let tenant = Uuid::parse_str(tenant_raw.trim())?;
         let conn = db::connect(&url).await?;
 
-        let known =
-            resolve_person_ids_by_email(&conn, tenant, "serdar.findik@constructor.tech").await?;
+        let known = resolve_person_ids_by_email(&conn, tenant, known_email.trim()).await?;
         assert_eq!(
             known.len(),
             1,

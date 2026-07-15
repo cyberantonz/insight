@@ -6,7 +6,8 @@ Built on the gears-rust framework — same host pattern as `services/analytics`
 gateway authenticates upstream).
 
 Current state: boots as a gears host, connects to MariaDB on startup, serves
-`/health`. Read endpoints (`GET /v1/persons/{email}`, `POST /v1/profiles`) are WIP.
+`/health`, and implements the read API — `POST /v1/profiles` (attributes, `ids[]`,
+org tree) plus the deprecated `GET /v1/persons/{email}`.
 
 ## Run locally against the dev cluster DB
 
