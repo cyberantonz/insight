@@ -28,11 +28,9 @@
 -- (source_key, measure_key, entity_id, metric_date), so single-measure
 -- queries read index-pruned ranges rather than the whole relation.
 --
--- The build is bounded by the settings above (ADR-0009): they ride the
--- CREATE-AS-SELECT for every runner — deploy hook, sync workflow, or a
--- developer shell — so an over-limit build spills aggregation/sort state
--- to disk instead of failing on the server memory tracker. No runner
--- profile has to remember the clamp.
+-- query_settings bound the CREATE-AS-SELECT for every runner: an
+-- over-limit build spills aggregation/sort state to disk instead of
+-- failing on the server memory tracker.
 --
 -- Grain per measure:
 --   day-grain sums:  commit_count, code_lines_added, lines_added,

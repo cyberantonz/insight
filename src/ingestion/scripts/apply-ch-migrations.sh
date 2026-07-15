@@ -51,20 +51,13 @@ for migration in "$SCRIPT_DIR/migrations"/*.sql; do
   run_ch < "$migration"
 done
 
-echo "=== Healing AI staging contract schemas (ADR-0010) ==="
-# Display labels left the class contract — they derive in the gold view
-# from the tool/surface discriminator codes (macros/ai_labels.sql).
-# Pre-existing staging tables may still carry the columns, tail-appended
-# by the retired label repairs or by dbt's append_new_columns. Physical
-# column ORDER must equal the model's SELECT order (dbt-clickhouse
-# incremental inserts map positionally; union_by_tag is a positional
-# SELECT * UNION ALL), so the columns are dropped — DROP preserves the
-# relative order of the remaining columns and converges every instance
-# state to one uniform schema. conversation_count is contract DATA and is
-# position-pinned to the model SELECT instead (ADD places it correctly
-# where absent; MODIFY is a metadata-only reorder where it was
-# tail-appended). Guarded per table: staging tables do not exist before
-# the connector's first dbt run. Idempotent: re-runs are no-ops.
+echo "=== Healing AI staging contract schemas ==="
+# Physical column order must equal the model's SELECT order (positional
+# incremental inserts, positional union). Labels left the contract (they
+# derive in gold — macros/ai_labels.sql): DROP converges every table
+# state. conversation_count is data: ADD/MODIFY pin its position.
+# Guarded (staging tables exist only after the connector's first run);
+# idempotent (re-runs are no-ops).
 heal_ai_dev_staging() {
   local table="$1"
   ch_table_exists staging "${table}" || return 0
@@ -95,22 +88,13 @@ heal_ai_dev_staging chatgpt_team__ai_dev_usage
 heal_ai_assistant_staging claude_enterprise__ai_assistant_usage
 heal_ai_assistant_staging chatgpt_team__ai_assistant_usage
 
-echo "=== Healing collab-chat and CRM contract schemas (ADR-0010) ==="
-# Same positional invariant as the AI heal above, two more occurrences:
-#  * collab chat: `direct_and_group_messages` (#266) was added mid-SELECT
-#    with append_new_columns and no connector rebuild — pre-existing member
-#    tables tail-appended it (or, for the class table, never received it:
-#    the class model defaults to on_schema_change='ignore').
-#  * CRM: the salesforce members project the envelope `custom_fields` blob
-#    after `metadata`; the hubspot members historically did not, so the
-#    positional class union failed whenever both connectors were configured.
-#    The hubspot models now emit a structural '{}' at the same position.
-# Class tables are healed here rather than in migrations/*.sql because the
-# `AFTER` anchors do not exist on the minimal gold-view placeholders — a
-# real table (built by dbt from the model) always carries them, so the
-# heals are guarded on "exists and is not a placeholder". Placeholder
-# tables need no healing: drop_silver_placeholders_at_start replaces them
-# with the real schema before the first materialization.
+echo "=== Healing collab-chat and CRM contract schemas ==="
+# Same positional invariant: collab chat's direct_and_group_messages
+# (#266) was added mid-SELECT without a rebuild; CRM's hubspot members
+# lacked the custom_fields column the salesforce members project. Healed
+# here rather than in migrations/*.sql because the AFTER anchors do not
+# exist on the minimal gold-view placeholders — heals run only on real
+# tables (placeholders are replaced with the real schema at first build).
 ch_table_is_real() {
   local db="$1" table="$2"
   ch_table_exists "$db" "$table" || return 1
@@ -167,10 +151,10 @@ echo "=== Building gold models (dbt run --select tag:gold) ==="
 # relation the views reference exists, so this run type-checks on a fresh
 # cluster — the same guarantee the scoped per-connector dbt runs rely on
 # for sideways refs. Idempotent: views are create-or-replace and
-# table-materialized gold models rebuild via atomic swap. Table builds are
-# bounded by the models' own ClickHouse settings (memory, threads, disk
-# spill — ADR-0009), so this step degrades to a slower build rather than
-# failing the deploy on data volume.
+# table-materialized gold models rebuild via atomic swap. Table builds
+# are bounded by the models' own query_settings (memory, threads, disk
+# spill), so this step degrades to a slower build rather than failing
+# the deploy on data volume.
 #
 # Profile generation mirrors the dbt-run WorkflowTemplate: python3 writes
 # profiles.yml from env vars, never interpolating values into YAML text.

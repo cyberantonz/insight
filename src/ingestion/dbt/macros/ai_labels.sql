@@ -1,11 +1,7 @@
-{# Display labels for the AI `tool` and `surface` dimension codes. Static
-   product vocabulary, not source data — same rationale as
-   git_source_label: computed in the gold view so it applies retroactively
-   on every read, centralized so no vendor mapping is inlined in model SQL
-   and no label is ever denormalized into silver rows (where historical
-   rows would need backfills the incremental models never re-read). An
-   unmapped code falls through as itself, so a new connector renders its
-   raw code until the vocabulary here learns it. #}
+{# Display labels for the AI `tool` and `surface` dimension codes — static
+   product vocabulary, same rationale as git_source_label: computed at gold
+   read time, never denormalized into silver rows. An unmapped code falls
+   through as itself. #}
 
 {% macro ai_tool_label(tool_expr) %}
 multiIf(

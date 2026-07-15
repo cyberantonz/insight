@@ -44,9 +44,7 @@ WITH src AS (
             'annualrevenue',     coalesce(toString(properties_annualrevenue), ''),
             'archived',          toString(coalesce(archived, false))
         ))                                              AS metadata,
-        -- Envelope parity with salesforce__crm_*: HubSpot has no custom-fields
-        -- blob, so the column is a structural empty object (union members must
-        -- match in name, order, and position).
+        -- Envelope parity with salesforce__crm_* (no HubSpot custom-fields blob).
         '{}'                                            AS custom_fields,
         createdAt                                       AS created_at,
         updatedAt                                       AS updated_at,
