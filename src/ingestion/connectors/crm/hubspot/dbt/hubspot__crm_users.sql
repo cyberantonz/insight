@@ -54,6 +54,10 @@ WITH src AS (
             'userId',   coalesce(toString(userId), ''),
             'archived', toString(coalesce(archived, false))
         ))                                              AS metadata,
+        -- Envelope parity with salesforce__crm_*: HubSpot has no custom-fields
+        -- blob, so the column is a structural empty object (union members must
+        -- match in name, order, and position).
+        '{}'                                            AS custom_fields,
         collected_at,
         data_source,
         greatest(

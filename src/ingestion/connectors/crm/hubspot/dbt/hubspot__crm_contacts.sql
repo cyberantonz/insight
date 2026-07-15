@@ -48,6 +48,10 @@ WITH src AS (
             'hs_analytics_source', coalesce(toString(properties_hs_analytics_source), ''),
             'archived',         toString(coalesce(archived, false))
         ))                                              AS metadata,
+        -- Envelope parity with salesforce__crm_*: HubSpot has no custom-fields
+        -- blob, so the column is a structural empty object (union members must
+        -- match in name, order, and position).
+        '{}'                                            AS custom_fields,
         createdAt                                       AS created_at,
         updatedAt                                       AS updated_at,
         data_source,
