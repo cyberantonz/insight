@@ -51,7 +51,7 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Resolve a profile by email or source-native id")
         .authenticated()
         .no_license_required()
-        .json_request::<profile::ResolveProfileCommand>(openapi, "Identity to resolve")
+        .json_request::<profile::ResolveProfileRequest>(openapi, "Identity to resolve")
         .json_response_with_schema::<profile::ProfileResponse>(
             openapi,
             StatusCode::OK,

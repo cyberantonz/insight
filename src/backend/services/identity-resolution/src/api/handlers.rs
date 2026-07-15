@@ -19,7 +19,7 @@ use super::AppState;
 use super::canonical_json::CanonicalJson;
 use super::error::{PersonError, ProfileError};
 use crate::domain::profile::{
-    ParentProjection, PersonResponse, ResolveProfileCommand, assemble_person, assemble_profile,
+    ParentProjection, PersonResponse, ResolveProfileRequest, assemble_person, assemble_profile,
     latest_values,
 };
 use crate::infra::db::persons_repo;
@@ -33,14 +33,14 @@ use crate::infra::db::persons_repo;
 pub async fn resolve_profile(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    CanonicalJson(cmd): CanonicalJson<ResolveProfileCommand>,
+    CanonicalJson(req): CanonicalJson<ResolveProfileRequest>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    let person_ids = resolve_person_ids(&state, tenant, &cmd).await?;
+    let person_ids = resolve_person_ids(&state, tenant, &req).await?;
 
     match person_ids.as_slice() {
         [] => Err(ProfileError::not_found("person not found")
-            .with_resource(cmd.value)
+            .with_resource(req.value)
             .create()),
         [person_id] => {
             let observations =
@@ -54,7 +54,7 @@ pub async fn resolve_profile(
             // (matches .NET ProfileLookupService). Practically unreachable.
             if observations.is_empty() {
                 return Err(ProfileError::not_found("person not found")
-                    .with_resource(cmd.value.clone())
+                    .with_resource(req.value.clone())
                     .create());
             }
             let source_ids =
@@ -126,16 +126,16 @@ pub async fn get_person_by_email(
 
 /// Validate the request and resolve it to candidate `person_id`s.
 ///
-/// Validation mirrors the .NET `ResolveProfileCommandValidator`; resolution
+/// Validation mirrors the .NET `ResolveProfileRequestValidator`; resolution
 /// dispatches on `value_type` ("email" across all sources, "id" scoped to one
 /// source instance). Returns the (possibly empty or multi-element) match set —
 /// the caller maps 0 → 404, 1 → profile, >1 → 409.
 async fn resolve_person_ids(
     state: &AppState,
     tenant: Uuid,
-    cmd: &ResolveProfileCommand,
+    req: &ResolveProfileRequest,
 ) -> Result<Vec<Uuid>, CanonicalError> {
-    let value_type = cmd.value_type.trim();
+    let value_type = req.value_type.trim();
 
     // Validation order mirrors the .NET FluentValidation declaration order:
     // value_type first, then value, then the source cross-field rules.
@@ -153,19 +153,19 @@ async fn resolve_person_ids(
             )
             .create());
     }
-    if cmd.value.trim().is_empty() {
+    if req.value.trim().is_empty() {
         return Err(ProfileError::invalid_argument()
             .with_field_violation("value", "value must not be empty", "INVALID")
             .create());
     }
-    if cmd.value.chars().count() > 320 {
+    if req.value.chars().count() > 320 {
         return Err(ProfileError::invalid_argument()
             .with_field_violation("value", "value must be at most 320 characters", "INVALID")
             .create());
     }
 
     if value_type == "id" {
-        let source_type = cmd.insight_source_type.as_deref().ok_or_else(|| {
+        let source_type = req.insight_source_type.as_deref().ok_or_else(|| {
             ProfileError::invalid_argument()
                 .with_field_violation(
                     "insight_source_type",
@@ -174,7 +174,7 @@ async fn resolve_person_ids(
                 )
                 .create()
         })?;
-        let source_id = cmd.insight_source_id.ok_or_else(|| {
+        let source_id = req.insight_source_id.ok_or_else(|| {
             ProfileError::invalid_argument()
                 .with_field_violation(
                     "insight_source_id",
@@ -188,7 +188,7 @@ async fn resolve_person_ids(
             tenant,
             source_type,
             source_id,
-            &cmd.value,
+            &req.value,
         )
         .await
         .map_err(|e| {
@@ -197,7 +197,7 @@ async fn resolve_person_ids(
         })
     } else {
         // value_type == "email"
-        if cmd.insight_source_type.is_some() || cmd.insight_source_id.is_some() {
+        if req.insight_source_type.is_some() || req.insight_source_id.is_some() {
             return Err(ProfileError::invalid_argument()
                 .with_field_violation(
                     "insight_source_type",
@@ -206,7 +206,7 @@ async fn resolve_person_ids(
                 )
                 .create());
         }
-        persons_repo::resolve_person_ids_by_email(&state.db, tenant, &cmd.value)
+        persons_repo::resolve_person_ids_by_email(&state.db, tenant, &req.value)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "resolve by email failed");

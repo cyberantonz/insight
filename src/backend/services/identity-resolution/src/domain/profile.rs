@@ -14,7 +14,7 @@ use crate::infra::db::persons_repo::SourceIdRow;
 /// sources for the tenant; `value_type = "id"` matches a source-native account
 /// id within one source instance (needs `insight_source_type` + `insight_source_id`).
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct ResolveProfileCommand {
+pub struct ResolveProfileRequest {
     pub value_type: String,
     pub value: String,
     /// Required when `value_type = "id"` — the source instance to scope to.
@@ -126,7 +126,7 @@ pub struct ParentProjection {
 }
 
 // Marker traits the toolkit `OperationBuilder` requires (alongside `ToSchema`).
-impl toolkit::api::api_dto::RequestApiDto for ResolveProfileCommand {}
+impl toolkit::api::api_dto::RequestApiDto for ResolveProfileRequest {}
 impl toolkit::api::api_dto::ResponseApiDto for ProfileResponse {}
 impl toolkit::api::api_dto::ResponseApiDto for PersonResponse {}
 
