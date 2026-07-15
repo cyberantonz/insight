@@ -61,3 +61,11 @@ gears:
       # APP__gears__identity-resolution__config__database_url. Left empty
       # here so no credential is committed.
       database_url: ""
+      # Source instance whose org_chart edges drive the parent/supervisor +
+      # subordinates tree on the lookup endpoints (mirrors .NET AppOptions).
+      org_chart_source_type: "bamboohr"
+      # Kill switch for the recursive subordinates walk. Set to false to skip
+      # the (potentially large, N+1) subtree expansion on POST /v1/profiles.
+      expand_subordinates: true
+      # Hard cap on org-tree recursion depth (cycle-safe).
+      max_depth: 16

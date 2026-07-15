@@ -50,6 +50,13 @@ pub async fn resolve_profile(
                         tracing::error!(error = %e, "fetch person observations failed");
                         CanonicalError::internal("profile assembly failed").create()
                     })?;
+            // Resolver returned an id but hydration found no rows → not-found
+            // (matches .NET ProfileLookupService). Practically unreachable.
+            if observations.is_empty() {
+                return Err(ProfileError::not_found("person not found")
+                    .with_resource(cmd.value.clone())
+                    .create());
+            }
             let source_ids =
                 persons_repo::current_source_ids_for_person(&state.db, tenant, *person_id)
                     .await
@@ -130,6 +137,22 @@ async fn resolve_person_ids(
 ) -> Result<Vec<Uuid>, CanonicalError> {
     let value_type = cmd.value_type.trim();
 
+    // Validation order mirrors the .NET FluentValidation declaration order:
+    // value_type first, then value, then the source cross-field rules.
+    if value_type.is_empty() {
+        return Err(ProfileError::invalid_argument()
+            .with_field_violation("value_type", "value_type is required", "REQUIRED")
+            .create());
+    }
+    if value_type != "email" && value_type != "id" {
+        return Err(ProfileError::invalid_argument()
+            .with_field_violation(
+                "value_type",
+                "value_type must be 'email' or 'id'",
+                "INVALID",
+            )
+            .create());
+    }
     if cmd.value.trim().is_empty() {
         return Err(ProfileError::invalid_argument()
             .with_field_violation("value", "value must not be empty", "INVALID")
@@ -140,69 +163,56 @@ async fn resolve_person_ids(
             .with_field_violation("value", "value must be at most 320 characters", "INVALID")
             .create());
     }
-    if value_type == "email"
-        && (cmd.insight_source_type.is_some() || cmd.insight_source_id.is_some())
-    {
-        return Err(ProfileError::invalid_argument()
-            .with_field_violation(
-                "insight_source_type",
-                "insight_source_type / insight_source_id must be null for value_type='email'",
-                "INVALID",
-            )
-            .create());
-    }
 
-    let person_ids = match value_type {
-        "email" => persons_repo::resolve_person_ids_by_email(&state.db, tenant, &cmd.value)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "resolve by email failed");
-                CanonicalError::internal("profile resolution failed").create()
-            })?,
-        "id" => {
-            let source_type = cmd.insight_source_type.as_deref().ok_or_else(|| {
-                ProfileError::invalid_argument()
-                    .with_field_violation(
-                        "insight_source_type",
-                        "insight_source_type is required for value_type='id'",
-                        "REQUIRED",
-                    )
-                    .create()
-            })?;
-            let source_id = cmd.insight_source_id.ok_or_else(|| {
-                ProfileError::invalid_argument()
-                    .with_field_violation(
-                        "insight_source_id",
-                        "insight_source_id is required for value_type='id'",
-                        "REQUIRED",
-                    )
-                    .create()
-            })?;
-            persons_repo::resolve_person_ids_by_source_id(
-                &state.db,
-                tenant,
-                source_type,
-                source_id,
-                &cmd.value,
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "resolve by source id failed");
-                CanonicalError::internal("profile resolution failed").create()
-            })?
-        }
-        _ => {
+    if value_type == "id" {
+        let source_type = cmd.insight_source_type.as_deref().ok_or_else(|| {
+            ProfileError::invalid_argument()
+                .with_field_violation(
+                    "insight_source_type",
+                    "insight_source_type is required for value_type='id'",
+                    "REQUIRED",
+                )
+                .create()
+        })?;
+        let source_id = cmd.insight_source_id.ok_or_else(|| {
+            ProfileError::invalid_argument()
+                .with_field_violation(
+                    "insight_source_id",
+                    "insight_source_id is required for value_type='id'",
+                    "REQUIRED",
+                )
+                .create()
+        })?;
+        persons_repo::resolve_person_ids_by_source_id(
+            &state.db,
+            tenant,
+            source_type,
+            source_id,
+            &cmd.value,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "resolve by source id failed");
+            CanonicalError::internal("profile resolution failed").create()
+        })
+    } else {
+        // value_type == "email"
+        if cmd.insight_source_type.is_some() || cmd.insight_source_id.is_some() {
             return Err(ProfileError::invalid_argument()
                 .with_field_violation(
-                    "value_type",
-                    "value_type must be 'email' or 'id'",
+                    "insight_source_type",
+                    "insight_source_type / insight_source_id must be null for value_type='email'",
                     "INVALID",
                 )
                 .create());
         }
-    };
-
-    Ok(person_ids)
+        persons_repo::resolve_person_ids_by_email(&state.db, tenant, &cmd.value)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "resolve by email failed");
+                CanonicalError::internal("profile resolution failed").create()
+            })
+    }
 }
 
 /// Resolve the person's parent (supervisor) edge from `org_chart`, filtered to
