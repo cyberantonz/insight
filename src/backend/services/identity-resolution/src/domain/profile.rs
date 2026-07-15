@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::infra::db::entities::persons;
+use crate::infra::db::persons_repo::SourceIdRow;
 
 /// Body of `POST /v1/profiles`. `value_type = "email"` matches across all
 /// sources for the tenant; `value_type = "id"` matches a source-native account
@@ -51,6 +52,44 @@ pub struct ProfileResponse {
     pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub employee_id: Option<String>,
+    // Org tree. `supervisor_*` and the legacy `parent_*` triple are both filled
+    // from the single `org_chart` parent edge (matching the .NET assembler).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_person_id: Option<Uuid>,
+    /// Every current source-native id for the person (one per source instance).
+    /// Always serialized — an empty array when the person has no ids — matching
+    /// the .NET contract (unlike the attributes above, which are omitted).
+    pub ids: Vec<ProfileIdEntry>,
+}
+
+/// One source-native account id bound to the person — the latest
+/// `value_type='id'` observation per source instance. Ported from the .NET
+/// `ProfileIdEntry`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProfileIdEntry {
+    pub insight_source_type: String,
+    pub insight_source_id: Uuid,
+    pub value: String,
+}
+
+/// The parent (a.k.a. supervisor) edge resolved into the fields written onto
+/// the response. Both the `supervisor_*` and legacy `parent_*` fields come from
+/// this single projection (matching the .NET `PersonAssembler`). `None` leaves
+/// every parent field null.
+pub struct ParentProjection {
+    pub person_id: Uuid,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    /// Parent's source-native id on the edge's source instance (→ `parent_id`).
+    pub source_native_id: Option<String>,
 }
 
 // Marker traits the toolkit `OperationBuilder` requires (alongside `ToSchema`).
@@ -65,12 +104,79 @@ pub fn assemble_profile(
     person_id: Uuid,
     tenant_id: Uuid,
     observations: Vec<persons::Model>,
+    source_ids: Vec<SourceIdRow>,
+    parent: Option<ParentProjection>,
 ) -> ProfileResponse {
-    // Keep the latest observation per value_type (max created_at).
+    let latest = latest_values(observations);
+    let get = |value_type: &str| latest.get(value_type).cloned();
+
+    // Display-name fallback: derive first/last from display_name only when
+    // neither is observed (matches the .NET `DisplayNameSplitter` path).
+    let display_name = get("display_name");
+    let mut first_name = get("first_name");
+    let mut last_name = get("last_name");
+    if first_name.is_none()
+        && last_name.is_none()
+        && let Some(dn) = display_name.as_deref()
+    {
+        let (first, last) = split_display_name(dn);
+        first_name = non_blank(first);
+        last_name = non_blank(last);
+    }
+
+    // Map repo rows to API entries — the DB layer stays free of API DTOs.
+    let ids = source_ids
+        .into_iter()
+        .map(|s| ProfileIdEntry {
+            insight_source_type: s.source_type,
+            insight_source_id: s.source_id,
+            value: s.value,
+        })
+        .collect();
+
+    // Both `supervisor_*` and legacy `parent_*` are filled from the one edge.
+    let (supervisor_email, supervisor_name, parent_email, parent_id, parent_person_id) =
+        match parent {
+            Some(p) => (
+                p.email.clone(),
+                p.display_name,
+                p.email,
+                p.source_native_id.and_then(non_blank),
+                Some(p.person_id),
+            ),
+            None => (None, None, None, None, None),
+        };
+
+    ProfileResponse {
+        person_id,
+        insight_tenant_id: tenant_id,
+        email: get("email"),
+        display_name,
+        first_name,
+        last_name,
+        department: get("department"),
+        division: get("division"),
+        job_title: get("job_title"),
+        status: get("status"),
+        username: get("username"),
+        employee_id: get("employee_id"),
+        supervisor_email,
+        supervisor_name,
+        parent_email,
+        parent_id,
+        parent_person_id,
+        ids,
+    }
+}
+
+/// Collapse observations to the current `value_effective` per `value_type` —
+/// latest by `(created_at, id)`, blank values dropped. Shared by profile
+/// assembly and parent-edge projection.
+#[must_use]
+pub fn latest_values(observations: Vec<persons::Model>) -> HashMap<String, String> {
     let mut latest: HashMap<String, persons::Model> = HashMap::new();
     for obs in observations {
         match latest.get(&obs.value_type) {
-            // Keep the current winner unless the new row is strictly newer.
             // Tie-break on `id` (matches the .NET `created_at DESC, id DESC`), so
             // the result is deterministic even when `created_at` values are equal
             // (common under batch backfill) and independent of DB row order.
@@ -80,28 +186,36 @@ pub fn assemble_profile(
             }
         }
     }
+    latest
+        .into_iter()
+        .filter_map(|(k, m)| {
+            let trimmed = m.value_effective?.trim().to_owned();
+            (!trimmed.is_empty()).then_some((k, trimmed))
+        })
+        .collect()
+}
 
-    let get = |value_type: &str| -> Option<String> {
-        latest
-            .get(value_type)
-            .and_then(|m| m.value_effective.clone())
-            .filter(|s| !s.trim().is_empty())
-    };
-
-    ProfileResponse {
-        person_id,
-        insight_tenant_id: tenant_id,
-        email: get("email"),
-        display_name: get("display_name"),
-        first_name: get("first_name"),
-        last_name: get("last_name"),
-        department: get("department"),
-        division: get("division"),
-        job_title: get("job_title"),
-        status: get("status"),
-        username: get("username"),
-        employee_id: get("employee_id"),
+/// Best-effort split of a display name into `(first, last)` when dedicated
+/// observations are missing. Ported from the .NET `DisplayNameSplitter`:
+/// `"Last, First"` (comma) → `(after, before)`; `"First Rest"` (space) →
+/// `(before, rest)`; single token → `(token, "")`; blank → `("", "")`.
+fn split_display_name(display_name: &str) -> (String, String) {
+    let trimmed = display_name.trim();
+    if trimmed.is_empty() {
+        return (String::new(), String::new());
     }
+    if let Some((before, after)) = trimmed.split_once(',') {
+        return (after.trim().to_owned(), before.trim().to_owned());
+    }
+    if let Some((before, after)) = trimmed.split_once(' ') {
+        return (before.trim().to_owned(), after.trim().to_owned());
+    }
+    (trimmed.to_owned(), String::new())
+}
+
+/// `None` when the string is blank, else `Some(s)`.
+fn non_blank(s: String) -> Option<String> {
+    if s.trim().is_empty() { None } else { Some(s) }
 }
 
 #[cfg(test)]
@@ -144,6 +258,8 @@ mod tests {
                 obs("email", "new@example.com", newer), // newer wins
                 obs("display_name", "Ann Smith", newer),
             ],
+            vec![],
+            None,
         );
 
         assert_eq!(profile.person_id, person_id);
@@ -163,10 +279,15 @@ mod tests {
                 obs("email", "a@b.com", t),
                 obs("department", "   ", t), // blank → None
             ],
+            vec![],
+            None,
         );
 
         assert_eq!(profile.email.as_deref(), Some("a@b.com"));
-        assert_eq!(profile.department, None, "blank value_effective must be dropped");
+        assert_eq!(
+            profile.department, None,
+            "blank value_effective must be dropped"
+        );
         assert_eq!(profile.job_title, None, "absent value_type must be None");
         Ok(())
     }
@@ -186,6 +307,8 @@ mod tests {
                 obs("username", "asmith", t),
                 obs("employee_id", "E1", t),
             ],
+            vec![],
+            None,
         );
 
         assert_eq!(profile.first_name.as_deref(), Some("Ann"));
@@ -207,11 +330,153 @@ mod tests {
         high.id = 20;
 
         // Highest id wins on equal created_at — regardless of input row order.
-        let a = assemble_profile(Uuid::from_u128(1), Uuid::from_u128(2), vec![low.clone(), high.clone()]);
-        let b = assemble_profile(Uuid::from_u128(1), Uuid::from_u128(2), vec![high, low]);
+        let a = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![low.clone(), high.clone()],
+            vec![],
+            None,
+        );
+        let b = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![high, low],
+            vec![],
+            None,
+        );
 
         assert_eq!(a.email.as_deref(), Some("high-id@example.com"));
         assert_eq!(b.email.as_deref(), Some("high-id@example.com"));
+        Ok(())
+    }
+
+    #[test]
+    fn maps_source_ids_into_response_preserving_order() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("email", "a@b.com", t)],
+            vec![
+                SourceIdRow {
+                    source_type: "github".to_owned(),
+                    source_id: Uuid::from_u128(7),
+                    value: "octocat".to_owned(),
+                },
+                SourceIdRow {
+                    source_type: "slack".to_owned(),
+                    source_id: Uuid::from_u128(8),
+                    value: "U123".to_owned(),
+                },
+            ],
+            None,
+        );
+
+        assert_eq!(profile.ids.len(), 2);
+        assert_eq!(profile.ids[0].insight_source_type, "github");
+        assert_eq!(profile.ids[0].insight_source_id, Uuid::from_u128(7));
+        assert_eq!(profile.ids[0].value, "octocat");
+        assert_eq!(profile.ids[1].value, "U123");
+        Ok(())
+    }
+
+    #[test]
+    fn ids_default_to_empty_array() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("email", "a@b.com", t)],
+            vec![],
+            None,
+        );
+        assert!(profile.ids.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn parent_projection_fills_supervisor_and_parent_fields() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let parent = ParentProjection {
+            person_id: Uuid::from_u128(9),
+            email: Some("boss@example.com".to_owned()),
+            display_name: Some("Big Boss".to_owned()),
+            source_native_id: Some("E42".to_owned()),
+        };
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("email", "a@b.com", t)],
+            vec![],
+            Some(parent),
+        );
+
+        // supervisor_* and legacy parent_* mirror the single edge.
+        assert_eq!(
+            profile.supervisor_email.as_deref(),
+            Some("boss@example.com")
+        );
+        assert_eq!(profile.supervisor_name.as_deref(), Some("Big Boss"));
+        assert_eq!(profile.parent_email.as_deref(), Some("boss@example.com"));
+        assert_eq!(profile.parent_id.as_deref(), Some("E42"));
+        assert_eq!(profile.parent_person_id, Some(Uuid::from_u128(9)));
+        Ok(())
+    }
+
+    #[test]
+    fn no_parent_leaves_org_fields_none() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("email", "a@b.com", t)],
+            vec![],
+            None,
+        );
+        assert_eq!(profile.supervisor_email, None);
+        assert_eq!(profile.parent_person_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn display_name_split_fallback_only_when_first_last_absent() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+
+        // "First Last" split when neither name is observed.
+        let split = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("display_name", "Ann Smith", t)],
+            vec![],
+            None,
+        );
+        assert_eq!(split.first_name.as_deref(), Some("Ann"));
+        assert_eq!(split.last_name.as_deref(), Some("Smith"));
+
+        // "Last, First" comma form.
+        let comma = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("display_name", "Smith, Ann", t)],
+            vec![],
+            None,
+        );
+        assert_eq!(comma.first_name.as_deref(), Some("Ann"));
+        assert_eq!(comma.last_name.as_deref(), Some("Smith"));
+
+        // An explicit first_name suppresses the fallback entirely.
+        let explicit = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![
+                obs("display_name", "Ann Smith", t),
+                obs("first_name", "Annie", t),
+            ],
+            vec![],
+            None,
+        );
+        assert_eq!(explicit.first_name.as_deref(), Some("Annie"));
+        assert_eq!(explicit.last_name, None);
         Ok(())
     }
 }

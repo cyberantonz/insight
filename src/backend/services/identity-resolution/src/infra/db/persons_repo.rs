@@ -54,7 +54,10 @@ pub async fn resolve_person_ids_by_email(
     let stmt = Statement::from_sql_and_values(
         DbBackend::MySql,
         SQL,
-        [tenant_id.as_bytes().to_vec().into(), email.trim().to_owned().into()],
+        [
+            tenant_id.as_bytes().to_vec().into(),
+            email.trim().to_owned().into(),
+        ],
     );
 
     let rows = db.query_all(stmt).await?;
@@ -132,6 +135,129 @@ pub async fn fetch_person_observations(
     Ok(rows)
 }
 
+/// One current source-native id for a person (repo-level row). The domain maps
+/// it to the API `ProfileIdEntry` — the DB layer stays free of API types, the
+/// same way `assemble_profile` maps `persons::Model` to the response.
+pub struct SourceIdRow {
+    pub source_type: String,
+    pub source_id: Uuid,
+    pub value: String,
+}
+
+/// All current source-native ids for one person — one row per source instance
+/// (latest `value_type='id'` per (tenant, person, `source_type`, `source_id`)),
+/// ordered by source. Ported from `Sql.Profiles.cs::CurrentSourceIdsForPerson`.
+///
+/// # Errors
+///
+/// Returns an error if the query fails or a stored `insight_source_id` is not
+/// 16 bytes.
+pub async fn current_source_ids_for_person(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    person_id: Uuid,
+) -> anyhow::Result<Vec<SourceIdRow>> {
+    // Verbatim from Sql.Profiles.cs::CurrentSourceIdsForPerson, `@param` -> `?`.
+    const SQL: &str = r"
+        WITH ranked AS (
+            SELECT
+                insight_source_type,
+                insight_source_id,
+                value_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY insight_tenant_id, person_id, insight_source_type, insight_source_id, value_type
+                    ORDER BY created_at DESC, id DESC
+                ) AS rn
+            FROM persons
+            WHERE insight_tenant_id = ?
+              AND person_id         = ?
+              AND value_type        = 'id'
+        )
+        SELECT insight_source_type, insight_source_id, value_id AS value
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY insight_source_type, insight_source_id
+    ";
+
+    let stmt = Statement::from_sql_and_values(
+        DbBackend::MySql,
+        SQL,
+        [
+            tenant_id.as_bytes().to_vec().into(),
+            person_id.as_bytes().to_vec().into(),
+        ],
+    );
+
+    let rows = db.query_all(stmt).await?;
+    let mut ids = Vec::with_capacity(rows.len());
+    for row in rows {
+        let source_type: String = row.try_get("", "insight_source_type")?;
+        let source_id_bytes: Vec<u8> = row.try_get("", "insight_source_id")?;
+        // `value_type='id'` rows always carry `value_id` in practice; treat a
+        // NULL defensively as empty rather than dropping the source instance.
+        let value: Option<String> = row.try_get("", "value")?;
+        ids.push(SourceIdRow {
+            source_type,
+            source_id: Uuid::from_slice(&source_id_bytes)?,
+            value: value.unwrap_or_default(),
+        });
+    }
+    Ok(ids)
+}
+
+/// One current parent edge for a child, scoped to one source instance
+/// (repo-level row). Ported from the .NET `OrgChartEdge`.
+pub struct OrgChartEdge {
+    pub source_type: String,
+    pub source_id: Uuid,
+    pub parent_person_id: Uuid,
+}
+
+/// Current parent edges for one child (`valid_to IS NULL`), across every source
+/// instance, ordered by source. The caller filters to the configured
+/// `org_chart` source. Ported from `Sql.OrgChart.cs::CurrentParentsForChild`.
+///
+/// # Errors
+///
+/// Returns an error if the query fails or a stored id column is not 16 bytes.
+pub async fn current_parents_for_child(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    child_person_id: Uuid,
+) -> anyhow::Result<Vec<OrgChartEdge>> {
+    const SQL: &str = r"
+        SELECT insight_source_type, insight_source_id, parent_person_id
+        FROM org_chart
+        WHERE insight_tenant_id = ?
+          AND child_person_id   = ?
+          AND valid_to IS NULL
+        ORDER BY insight_source_type, insight_source_id
+    ";
+
+    let stmt = Statement::from_sql_and_values(
+        DbBackend::MySql,
+        SQL,
+        [
+            tenant_id.as_bytes().to_vec().into(),
+            child_person_id.as_bytes().to_vec().into(),
+        ],
+    );
+
+    let rows = db.query_all(stmt).await?;
+    let mut edges = Vec::with_capacity(rows.len());
+    for row in rows {
+        let source_type: String = row.try_get("", "insight_source_type")?;
+        let source_id: Vec<u8> = row.try_get("", "insight_source_id")?;
+        let parent_person_id: Vec<u8> = row.try_get("", "parent_person_id")?;
+        edges.push(OrgChartEdge {
+            source_type,
+            source_id: Uuid::from_slice(&source_id)?,
+            parent_person_id: Uuid::from_slice(&parent_person_id)?,
+        });
+    }
+    Ok(edges)
+}
+
 /// Read the `person_id` (`binary(16)`) column off each result row into a `Uuid`.
 fn person_ids_from_rows(rows: Vec<QueryResult>) -> anyhow::Result<Vec<Uuid>> {
     let mut person_ids = Vec::with_capacity(rows.len());
@@ -164,11 +290,17 @@ mod tests {
 
         let known =
             resolve_person_ids_by_email(&conn, tenant, "serdar.findik@constructor.tech").await?;
-        assert_eq!(known.len(), 1, "known email should resolve to exactly one person");
+        assert_eq!(
+            known.len(),
+            1,
+            "known email should resolve to exactly one person"
+        );
 
-        let missing =
-            resolve_person_ids_by_email(&conn, tenant, "nobody@nowhere.invalid").await?;
-        assert!(missing.is_empty(), "unknown email should resolve to zero persons");
+        let missing = resolve_person_ids_by_email(&conn, tenant, "nobody@nowhere.invalid").await?;
+        assert!(
+            missing.is_empty(),
+            "unknown email should resolve to zero persons"
+        );
         Ok(())
     }
 }

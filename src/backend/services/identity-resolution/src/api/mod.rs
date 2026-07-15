@@ -22,8 +22,7 @@ use crate::domain::profile;
 pub struct AppState {
     /// MariaDB connection pool (SeaORM) — reads `persons` / `account_person_map`.
     pub db: DatabaseConnection,
-    /// Gear config, retained for future runtime use.
-    #[allow(dead_code)]
+    /// Gear config (e.g. `org_chart_source_type` for parent/supervisor lookup).
     pub config: GearConfig,
 }
 
