@@ -1,11 +1,10 @@
 # Deploying Insight manually with Helm (single umbrella chart)
 
-This runbook shows a platform or DevOps engineer how to install the Insight business app onto an existing Kubernetes cluster using only `helm` and `kubectl`. There is no GitOps controller and no CI pipeline involved. You edit a small set of values, secret, and connector files by hand, then apply them directly with the tools already on your workstation. "Manual Helm" here means the opposite of GitOps: instead of a reconciler (like Argo CD) syncing this repository's manifests continuously, you run each command yourself, once, in order, and re-run `helm upgrade` whenever you change something.
+This runbook shows a platform or DevOps engineer how to install the Insight business app on an existing Kubernetes cluster using only `helm` and `kubectl` — no GitOps controller, no CI pipeline. You edit a small set of values, secret, and connector files by hand, then apply them yourself with tools already on your workstation. "Manual Helm" is the opposite of GitOps: instead of a reconciler (like Argo CD) continuously syncing this repo's manifests, you run each command once, in order, and re-run `helm upgrade` whenever something changes.
 
 ## Contents
 
 - [Overview](#overview)
-- [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Step 1 — Configure values/umbrella.yaml](#step-1--configure-valuesumbrellayaml)
 - [Step 2 — Fill the two secret files](#step-2--fill-the-two-secret-files)
@@ -18,56 +17,9 @@ This runbook shows a platform or DevOps engineer how to install the Insight busi
 
 ## Overview
 
-Insight is a business app that reads engineering and collaboration data from your tools (Jira, Slack, GitHub, and so on), pipelines it through ClickHouse, and serves metrics to a dashboard behind an OIDC login. The whole app installs as three services packaged in one Helm "umbrella" chart — a chart that bundles several sub-charts together so one `helm install` deploys everything at once. The chart is published at `oci://ghcr.io/constructorfabric/charts/insight`.
+Insight reads engineering and collaboration data from your tools (Jira, Slack, GitHub, and so on), pipelines it through ClickHouse, and serves metrics to a dashboard behind an OIDC login. It installs as four services in one Helm "umbrella" chart — bundled sub-charts, so a single `helm install` deploys everything — published at `oci://ghcr.io/constructorfabric/charts/insight`. The four are the Router (`insight-api-gateway`, public ingress + OIDC), Analytic (`insight-analytics`, metrics), Identity (`insight-identity`, person resolution), and the Frontend (`insight-frontend`, the web UI).
 
-This install path assumes your data infrastructure (ClickHouse, MariaDB, Redis, Redpanda, Airbyte, Argo Workflows) is already running somewhere reachable from the cluster — on the same cluster in another namespace, or external. The chart does not stand up that infrastructure; it only configures the three Insight services to dial into it. You supply one values file, two secret files, and (optionally) one Secret per data connector you want to enable. No GitOps repository, no CI job, and no automatic reconciliation of the Kubernetes manifests are required — you run the commands yourself.
-
-## Architecture
-
-Three services ship inside the umbrella chart:
-
-| Service | Deployment / image | Language | Role |
-|---------|---------------------|----------|------|
-| Analytic | `insight-analytics` | Rust | Reads the ClickHouse Gold layer (the final, query-ready tier of the data pipeline) and serves metrics; also runs the reconcile loop that discovers connector Secrets and provisions Airbyte sources |
-| Router | `insight-api-gateway` | Rust/axum | Public ingress; terminates OIDC login; proxies requests to Analytic and Identity |
-| Identity | `insight-identity` | .NET 9 | Resolves a JWT (JSON Web Token, the login credential issued by your identity provider) to a `person_id`; owns the MariaDB `identity` database |
-
-Six pieces of external infrastructure must already be running and reachable from the cluster: ClickHouse, MariaDB, Redis, Redpanda, Airbyte, and Argo Workflows. The chart wires the three services to these systems but does not install or manage them.
-
-```mermaid
-flowchart TB
-    IdP["OIDC Identity Provider\n(Entra / Okta / Auth0 / Keycloak / Dex)"]
-    User["Browser / End User"]
-
-    subgraph K8s["Kubernetes namespace: insight"]
-        Router["Router\ninsight-api-gateway (Rust/axum)\nterminates OIDC, public ingress"]
-        Analytic["Analytic\ninsight-analytics (Rust)\nserves metrics from ClickHouse Gold"]
-        Identity["Identity\ninsight-identity (.NET 9)\nJWT to person_id"]
-    end
-
-    subgraph Infra["Existing infrastructure (external; dial, don't install)"]
-        CH[(ClickHouse)]
-        Maria[(MariaDB)]
-        Redis[(Redis)]
-        Redpanda[(Redpanda)]
-        Airbyte[(Airbyte)]
-        Argo[(Argo Workflows)]
-    end
-
-    User -->|HTTPS| Router
-    Router -->|login redirect| IdP
-    Router -->|proxy| Analytic
-    Router -->|proxy| Identity
-
-    Analytic --> CH
-    Analytic --> Redis
-    Identity --> Maria
-
-    Airbyte -->|loads Bronze| CH
-    Argo -->|dbt transforms Bronze to Silver/Gold| CH
-    Analytic -.->|reconcile loop discovers connector Secrets,\nprovisions Airbyte sources| Airbyte
-    Redpanda -.->|event streaming backbone for ingestion| Airbyte
-```
+This path assumes your data infrastructure (ClickHouse, MariaDB, Redis, Redpanda, Airbyte, Argo Workflows) already runs and is reachable from the cluster, in another namespace or external. The chart doesn't stand it up; it only wires the services to it. You supply one values file, two secret files, and optionally one Secret per connector. No GitOps repo, CI, or auto-reconciliation — you run the commands yourself.
 
 ## Prerequisites
 
@@ -81,7 +33,7 @@ flowchart TB
 
 ### Running external infrastructure
 
-All six systems below must already be deployed and reachable from the cluster before you start. For the four datastores — ClickHouse, MariaDB, Redis, and Redpanda — the chart's `deploy: false` settings (see Step 1) tell it to dial these systems, not install them. Airbyte and Argo Workflows have no `deploy` key; the chart instead points at them via `airbyte.apiUrl` and `ingestion.reconcile.argoInstanceId`.
+All six systems below must be deployed and reachable from the cluster before you start. For the four datastores — ClickHouse, MariaDB, Redis, and Redpanda — the chart's `deploy: false` settings (see Step 1) tell it to dial these systems, not install them. Airbyte and Argo Workflows have no `deploy` key; the chart instead points at them via `airbyte.apiUrl` and `ingestion.reconcile.argoInstanceId`.
 
 | System | Used for |
 |--------|----------|
@@ -92,11 +44,11 @@ All six systems below must already be deployed and reachable from the cluster be
 | Airbyte | Runs the data connectors (Jira, Slack, GitHub, and so on) that load raw data into ClickHouse Bronze |
 | Argo Workflows | Runs the dbt transform workflows that turn Bronze into Silver and Gold, and runs the sync workflows Airbyte connections trigger |
 
-Run all commands in this guide from the directory containing your `values/`, `secrets/`, and `connectors/` files. This document is self-contained: it shows the complete `values/umbrella.yaml` skeleton, both secret files, and an example Secret for every connector, so you can assemble all three directories directly from what follows.
+Run all commands here from the directory holding your `values/`, `secrets/`, and `connectors/` files. This document is self-contained: it shows the full `values/umbrella.yaml` skeleton, both secret files, and an example Secret for every connector, so you can assemble all three directories from what follows.
 
 ## Step 1 — Configure values/umbrella.yaml
 
-Create `values/umbrella.yaml` with the skeleton below, then replace every `<...>` placeholder with your infrastructure's real addresses. Passwords never go in this file — they live in the secret files from Step 2.
+Create `values/umbrella.yaml` with the skeleton below, then replace every `<...>` placeholder with your infrastructure's real addresses. Passwords never go here — they live in the secret files from Step 2.
 
 ```yaml
 ## values/umbrella.yaml — the only values file you need.
@@ -172,6 +124,17 @@ identity:
   resources:
     requests: { cpu: 50m,  memory: 96Mi }
     limits:   { cpu: 250m, memory: 384Mi }
+
+frontend:                            # the web UI (dashboard)
+  replicaCount: 1
+  ingress:
+    enabled: true                    # WITHOUT this the UI pod runs but is never exposed
+    className: nginx
+    host: <HOST>                     # same FQDN as apiGateway.ingress.host; /api/* → Router, /* → UI
+  oidc:                              # public values; the browser starts the login here
+    issuer: "<OIDC_ISSUER>"          # same IdP as the Router
+    clientId: "<OIDC_CLIENT_ID>"
+    scopes: "openid profile email"   # IdP-specific
 ```
 
 If you do not already have this file, you can generate the chart's default values as a starting point instead of typing the skeleton by hand:
@@ -191,8 +154,10 @@ The placeholder table below explains every `<...>` value in the skeleton:
 | `<REDPANDA_BROKERS>` | Redpanda broker(s), in `host:9093` form |
 | `<AIRBYTE_API_URL>` | Airbyte server API URL, for example `http://host:8001` |
 | `<ARGO_INSTANCE_ID>` | Your Argo controller's instance ID, for example `argo-workflows-insight-infra` |
-| `<HOST>` | Public FQDN for the Router's ingress, for example `insight.example.com` |
+| `<HOST>` | Public FQDN for the ingress, shared by the Router and Frontend, for example `insight.example.com` |
 | `<TLS_SECRET>` | Name of the Kubernetes TLS Secret that covers that domain |
+
+The `frontend.oidc` block also uses `<OIDC_ISSUER>` and `<OIDC_CLIENT_ID>` — the same public values you put in the `insight-oidc` Secret (Step 2). The browser needs them to start the login; the Router validates the resulting token from its Secret.
 
 For infrastructure running in the same cluster, use the in-cluster DNS form `<service>.<namespace>.svc.cluster.local`. Any resolvable host or IP address also works.
 
@@ -208,7 +173,7 @@ A local/OrbStack variant of this file, `values/umbrella.orbstack.yaml`, is avail
 
 ### secrets/insight-db-creds.yaml
 
-This Secret carries the four datastore passwords consumed by Analytic and Identity. All four keys are required — the chart fails fast if any is missing. Values must match the passwords your infrastructure's datastores were actually deployed with.
+This Secret holds the four datastore passwords used by Analytic and Identity. All four keys are required — the chart fails fast if any is missing. Values must match the passwords your datastores were deployed with.
 
 ```yaml
 apiVersion: v1
@@ -234,7 +199,7 @@ kubectl -n $NS_INFRA get secret <redis-secret>      -o jsonpath='{.data.<redis-k
 
 Paste the decoded output into the matching `clickhouse-password` / `mariadb-password` / `mariadb-root-password` / `redis-password` field.
 
-> **Do not add an `app.kubernetes.io/managed-by: Helm` label to this Secret.** The chart uses the *absence* of that label to detect a "bring your own" credentials Secret. If the label is present, the chart assumes it owns the Secret and may overwrite your passwords with autogenerated ones. If the label is absent, the chart keeps your values and composes the `insight-analytics-config` and `insight-identity-config` Secrets from them.
+> **Do not add an `app.kubernetes.io/managed-by: Helm` label to this Secret.** The chart reads that label's *absence* as "bring your own" credentials. With the label, it assumes ownership and may overwrite your passwords with generated ones. Without it, the chart keeps your values and composes `insight-analytics-config` and `insight-identity-config` from them.
 
 ### secrets/insight-oidc.yaml
 
@@ -297,7 +262,7 @@ kubectl -n $NS_INFRA get secret airbyte-auth-secrets -o json \
   | kubectl -n insight apply -f -
 ```
 
-The `jq` step strips fields that are specific to the original Secret's identity (UID, resource version, owner references) and points the copy at the `insight` namespace, so Kubernetes accepts it as a new, independent object rather than rejecting it as a duplicate.
+The `jq` step strips the original Secret's identity fields (UID, resource version, owner references) and retargets it to the `insight` namespace, so Kubernetes accepts it as a new object.
 
 ## Step 4 — Install with Helm
 
@@ -316,7 +281,7 @@ Confirm all three service pods are running:
 
 ```sh
 kubectl -n insight get pods
-  # expect: insight-api-gateway, insight-analytics, insight-identity  (all Running)
+  # expect: insight-api-gateway, insight-analytics, insight-identity, insight-frontend  (all Running)
 ```
 
 Confirm the chart composed the two config Secrets from `insight-db-creds`:
@@ -337,7 +302,7 @@ Finally, open `https://<HOST>` in a browser (the host you set in Step 1) and con
 
 ## Step 6 — Configure connectors (optional)
 
-Connectors are how Insight pulls data from your actual tools — Jira issues, Slack messages, GitHub pull requests, and so on. Each connector is one Kubernetes Secret that both configures and enables a single Airbyte data source. Fill in the connector Secrets you need before applying them.
+Connectors pull data from your tools — Jira issues, Slack messages, GitHub pull requests, and so on. Each is one Kubernetes Secret that both configures and enables a single Airbyte data source. Fill in the ones you need, then apply them.
 
 ### Anatomy of a connector Secret
 
@@ -380,7 +345,7 @@ kubectl -n insight apply -f connectors/jira.yaml
 
 You only need to create Secrets for the tools you actually use — an unused connector file can be left unfilled and simply not applied.
 
-The reconcile loop scans the `insight` namespace roughly every 15 minutes. When it finds a new or changed connector Secret, it provisions the matching Airbyte source and connection and starts syncing data into Bronze automatically — no further manual steps are needed once the Secret is applied and correctly filled in.
+The reconcile loop scans the `insight` namespace about every 15 minutes. On a new or changed connector Secret, it provisions the matching Airbyte source and connection and starts syncing into Bronze automatically — no further steps once the Secret is applied and filled in correctly.
 
 ### Example Secret for every connector
 
@@ -812,7 +777,7 @@ stringData:
 | `<REDPANDA_BROKERS>` | `redpanda.brokers` | `deploy: false`; include port, e.g. `:9093` |
 | `<AIRBYTE_API_URL>` | `airbyte.apiUrl` | e.g. `http://host:8001` |
 | `<ARGO_INSTANCE_ID>` | `ingestion.reconcile.argoInstanceId` | Your Argo controller's instance ID |
-| `<HOST>` | `apiGateway.ingress.host` | Public FQDN for the Router |
+| `<HOST>` | `apiGateway.ingress.host`, `frontend.ingress.host` | Public FQDN, shared by Router and Frontend (`/api/*` → Router, `/*` → UI) |
 | `<TLS_SECRET>` | `apiGateway.ingress.tls.secretName` | Kubernetes TLS Secret name |
 
 Other notable (non-placeholder) settings in this file:
