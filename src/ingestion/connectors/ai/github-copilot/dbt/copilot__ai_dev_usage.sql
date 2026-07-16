@@ -104,7 +104,6 @@ SELECT
     CAST(NULL AS Nullable(String))                                         AS api_key_id,
     toDate(parseDateTimeBestEffortOrNull(m.day))                           AS day,
     'copilot'                                                              AS tool,
-    'GitHub Copilot'                                                       AS tool_label,
     -- session_count: Copilot doesn't expose a per-day session counter;
     -- presence of an activity row implies at least one active session.
     -- Match Cursor's convention: 1 per active day.

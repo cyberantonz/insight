@@ -4,7 +4,13 @@
     order_by=['source_key', 'measure_key', 'entity_id', 'metric_date'],
     schema='insight',
     alias='collab_metric_observations',
-    tags=['gold']
+    tags=['gold'],
+    query_settings={
+        'max_memory_usage': 1610612736,
+        'max_threads': 4,
+        'max_bytes_before_external_group_by': 805306368,
+        'max_bytes_before_external_sort': 805306368
+    }
 ) }}
 
 -- Source measure observations for the unified metrics runtime, collaboration
@@ -21,6 +27,10 @@
 -- per metric query. The ordering key mirrors the runtime's filter shape
 -- (source_key, measure_key, entity_id, metric_date), so single-measure
 -- queries read index-pruned ranges rather than the whole relation.
+--
+-- query_settings bound the CREATE-AS-SELECT for every runner: an
+-- over-limit build spills aggregation/sort state to disk instead of
+-- failing on the server memory tracker.
 --
 -- The `tool` dimension value is the `data_source` discriminator with the
 -- `insight_` prefix stripped (m365, slack, zoom, zulip_proxy). All Microsoft

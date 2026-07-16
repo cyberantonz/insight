@@ -51,53 +51,96 @@ for migration in "$SCRIPT_DIR/migrations"/*.sql; do
   run_ch < "$migration"
 done
 
-echo "=== Repairing class-contract labels on AI staging history ==="
-# Staging rows ingested before the label columns existed read them as ''
-# (String DEFAULT materialized by append_new_columns), and incremental
-# models never re-read old rows. Labels are DECLARED CONSTANTS in the
-# staging models, so writing the same constants here is byte-identical to
-# what a full re-materialization would produce — any later full refresh
-# independently converges to the same values and these updates become
-# permanent no-ops. Data-bearing contract columns are NOT repairable this
-# way; those go through the ADR-0015 major-bump full refresh instead.
-# Guarded per table: staging tables do not exist before the connector's
-# first dbt run. Idempotent: re-runs match zero rows.
-repair_staging_tool_label() {
-  local table="$1" label="$2"
+echo "=== Healing AI staging contract schemas ==="
+# Physical column order must equal the model's SELECT order (positional
+# incremental inserts, positional union). Labels left the contract (they
+# derive in gold — macros/ai_labels.sql): DROP converges every table
+# state. conversation_count is data: ADD/MODIFY pin its position.
+# Guarded (staging tables exist only after the connector's first run);
+# idempotent (re-runs are no-ops).
+heal_ai_dev_staging() {
+  local table="$1"
   ch_table_exists staging "${table}" || return 0
   echo "  staging.${table}"
   run_ch <<SQL
-ALTER TABLE staging.${table} ADD COLUMN IF NOT EXISTS tool_label String DEFAULT '';
-ALTER TABLE staging.${table} UPDATE tool_label = '${label}' WHERE tool_label = '' SETTINGS mutations_sync = 2;
+ALTER TABLE staging.${table} DROP COLUMN IF EXISTS tool_label;
+ALTER TABLE staging.${table} ADD COLUMN IF NOT EXISTS conversation_count Nullable(UInt32) AFTER session_count;
+ALTER TABLE staging.${table} MODIFY COLUMN conversation_count Nullable(UInt32) AFTER session_count;
 SQL
 }
 
-repair_staging_surface_label() {
+heal_ai_assistant_staging() {
   local table="$1"
   ch_table_exists staging "${table}" || return 0
+  echo "  staging.${table}"
   run_ch <<SQL
-ALTER TABLE staging.${table} ADD COLUMN IF NOT EXISTS surface_label String DEFAULT '';
-ALTER TABLE staging.${table} UPDATE surface_label = multiIf(
-    surface = 'chat', 'Chat',
-    surface = 'excel', 'Excel',
-    surface = 'powerpoint', 'PowerPoint',
-    surface = 'cowork', 'Cowork',
-    surface = 'cross', 'Cross',
-    surface
-) WHERE surface_label = '' SETTINGS mutations_sync = 2;
+ALTER TABLE staging.${table} DROP COLUMN IF EXISTS tool_label;
+ALTER TABLE staging.${table} DROP COLUMN IF EXISTS surface_label;
 SQL
 }
 
-repair_staging_tool_label cursor__ai_dev_usage "Cursor"
-repair_staging_tool_label claude_enterprise__ai_dev_usage "Claude Code"
-repair_staging_tool_label claude_team__ai_dev_usage "Claude Code"
-repair_staging_tool_label claude_admin__ai_dev_usage "Claude Code"
-repair_staging_tool_label copilot__ai_dev_usage "GitHub Copilot"
-repair_staging_tool_label chatgpt_team__ai_dev_usage "Codex"
-repair_staging_tool_label claude_enterprise__ai_assistant_usage "Claude"
-repair_staging_tool_label chatgpt_team__ai_assistant_usage "ChatGPT"
-repair_staging_surface_label claude_enterprise__ai_assistant_usage
-repair_staging_surface_label chatgpt_team__ai_assistant_usage
+heal_ai_dev_staging cursor__ai_dev_usage
+heal_ai_dev_staging claude_enterprise__ai_dev_usage
+heal_ai_dev_staging claude_team__ai_dev_usage
+heal_ai_dev_staging claude_admin__ai_dev_usage
+heal_ai_dev_staging copilot__ai_dev_usage
+heal_ai_dev_staging chatgpt_team__ai_dev_usage
+heal_ai_assistant_staging claude_enterprise__ai_assistant_usage
+heal_ai_assistant_staging chatgpt_team__ai_assistant_usage
+
+echo "=== Healing collab-chat and CRM contract schemas ==="
+# Same positional invariant: collab chat's direct_and_group_messages
+# (#266) was added mid-SELECT without a rebuild; CRM's hubspot members
+# lacked the custom_fields column the salesforce members project. Healed
+# here rather than in migrations/*.sql because the AFTER anchors do not
+# exist on the minimal gold-view placeholders — heals run only on real
+# tables (placeholders are replaced with the real schema at first build).
+ch_table_is_real() {
+  local db="$1" table="$2"
+  ch_table_exists "$db" "$table" || return 1
+  local placeholder_count
+  placeholder_count="$(
+    printf "SELECT count() FROM system.tables WHERE database='%s' AND name='%s' AND comment='INSIGHT_PLACEHOLDER_v1'" "$db" "$table" |
+      _ch_http_query |
+      tr -d '[:space:]'
+  )"
+  [[ "$placeholder_count" == "0" ]]
+}
+
+heal_collab_chat_table() {
+  local db="$1" table="$2"
+  ch_table_is_real "$db" "$table" || return 0
+  echo "  ${db}.${table}"
+  run_ch <<SQL
+ALTER TABLE ${db}.${table} ADD COLUMN IF NOT EXISTS direct_and_group_messages Nullable(Int64) AFTER group_chat_messages;
+ALTER TABLE ${db}.${table} MODIFY COLUMN direct_and_group_messages Nullable(Int64) AFTER group_chat_messages;
+SQL
+}
+
+heal_crm_table() {
+  local db="$1" table="$2"
+  ch_table_is_real "$db" "$table" || return 0
+  echo "  ${db}.${table}"
+  run_ch <<SQL
+ALTER TABLE ${db}.${table} ADD COLUMN IF NOT EXISTS custom_fields String DEFAULT '{}' AFTER metadata;
+ALTER TABLE ${db}.${table} MODIFY COLUMN custom_fields String DEFAULT '{}' AFTER metadata;
+SQL
+}
+
+heal_collab_chat_table staging m365__collab_chat_activity
+heal_collab_chat_table staging slack__collab_chat_activity
+heal_collab_chat_table staging zulip_proxy__collab_chat_activity
+heal_collab_chat_table silver class_collab_chat_activity
+heal_crm_table staging hubspot__crm_accounts
+heal_crm_table staging hubspot__crm_activities
+heal_crm_table staging hubspot__crm_contacts
+heal_crm_table staging hubspot__crm_deals
+heal_crm_table staging hubspot__crm_users
+heal_crm_table silver class_crm_accounts
+heal_crm_table silver class_crm_activities
+heal_crm_table silver class_crm_contacts
+heal_crm_table silver class_crm_deals
+heal_crm_table silver class_crm_users
 
 echo "=== Building gold models (dbt run --select tag:gold) ==="
 # Gold views are dbt-owned but must exist at DEPLOY time, not first-sync
@@ -107,7 +150,11 @@ echo "=== Building gold models (dbt run --select tag:gold) ==="
 # on a scheduled instance). The placeholders created above guarantee every
 # relation the views reference exists, so this run type-checks on a fresh
 # cluster — the same guarantee the scoped per-connector dbt runs rely on
-# for sideways refs. Idempotent: view materialization is create-or-replace.
+# for sideways refs. Idempotent: views are create-or-replace and
+# table-materialized gold models rebuild via atomic swap. Table builds
+# are bounded by the models' own query_settings (memory, threads, disk
+# spill), so this step degrades to a slower build rather than failing
+# the deploy on data volume.
 #
 # Profile generation mirrors the dbt-run WorkflowTemplate: python3 writes
 # profiles.yml from env vars, never interpolating values into YAML text.

@@ -8,14 +8,16 @@
 -- Source measure observations for the unified metrics runtime. Reads only
 -- class-contract fields: activity is row existence (the class contract
 -- guarantees rows exist only for real activity — see silver/ai/schema.yml),
--- display labels come from tool_label / surface_label, and conversation
+-- display labels derive from the tool / surface discriminator codes via the
+-- shared vocabulary macros (macros/ai_labels.sql — static product
+-- vocabulary, never denormalized into silver rows), and conversation
 -- semantics come from data presence (conversation_count is NULL for sources
--- without a conversation concept). Discriminator and label columns are
--- non-null non-empty by the class contract (enforced by silver schema tests);
--- this model consumes them as-is. No vendor-specific columns, tool names, or
--- label mappings may appear in this model. Every measure is emitted through
--- the shape macros in macros/metric_observation_measures.sql; filter
--- predicates may reference only class-contract dimension values.
+-- without a conversation concept). Discriminator columns are non-null
+-- non-empty by the class contract (enforced by silver schema tests); this
+-- model consumes them as-is. No vendor mapping is inlined in this model —
+-- labels go through the macros only. Every measure is emitted through the
+-- shape macros in macros/metric_observation_measures.sql; filter predicates
+-- may reference only class-contract dimension values.
 
 WITH
 ai_dev_usage_source AS (
@@ -24,7 +26,7 @@ ai_dev_usage_source AS (
         lower(email) AS entity_id,
         day AS metric_date,
         CAST(
-            [tuple('tool', tool, tool_label)]
+            [tuple('tool', tool, {{ ai_tool_label('tool') }})]
             AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS tool_dimensions,
         conversation_count,
@@ -44,13 +46,13 @@ ai_assistant_usage_source AS (
         day AS metric_date,
         surface,
         CAST(
-            [tuple('tool', tool, tool_label)]
+            [tuple('tool', tool, {{ ai_tool_label('tool') }})]
             AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS tool_dimensions,
         CAST(
             [
-                tuple('tool', tool, tool_label),
-                tuple('surface', surface, surface_label)
+                tuple('tool', tool, {{ ai_tool_label('tool') }}),
+                tuple('surface', surface, {{ ai_surface_label('surface') }})
             ] AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS tool_surface_dimensions,
         conversation_count,

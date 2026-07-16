@@ -60,13 +60,6 @@ models:
           - accepted_values:
               arguments:
                 values: ['cursor', 'claude_code', 'copilot', 'windsurf', 'codex']
-      - name: tool_label
-        description: >
-          Display label for the tool, declared by the emitting staging model
-          (the connector owns its display name). Consumed by Gold dimension
-          tuples; no label mapping may live downstream.
-        tests:
-          - not_null
       - name: conversation_count
         description: >
           Dev-tool conversations/threads on this day, populated ONLY by
@@ -307,13 +300,6 @@ models:
           - accepted_values:
               arguments:
                 values: ['claude', 'chatgpt', 'gemini']
-      - name: tool_label
-        description: >
-          Display label for the assistant vendor, declared by the emitting
-          staging model. Consumed by Gold dimension tuples; no label mapping
-          may live downstream.
-        tests:
-          - not_null
       - name: surface
         description: >
           Per-vendor surface discriminator. For tool='claude': 'chat' = Claude.ai
@@ -326,13 +312,6 @@ models:
           - accepted_values:
               arguments:
                 values: ['chat', 'excel', 'powerpoint', 'cowork', 'cross']
-      - name: surface_label
-        description: >
-          Display label for the surface, declared by the emitting staging
-          model. Consumed by Gold dimension tuples; no label mapping may live
-          downstream.
-        tests:
-          - not_null
       - name: session_count
         description: >
           Number of distinct sessions on the surface.
