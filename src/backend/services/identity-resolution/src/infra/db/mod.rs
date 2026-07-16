@@ -5,6 +5,7 @@
 //! .NET service today; we read `persons` / `account_person_map` from it.
 
 pub mod entities;
+pub mod ops_repo;
 pub mod persons_repo;
 pub mod seed_repo;
 
