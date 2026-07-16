@@ -99,12 +99,16 @@ pub struct ResolveOutcome {
     pub skipped_no_email: usize,
 }
 
-/// Normalize an email for case-insensitive grouping / lookup (ADR-0011: emails
-/// are matched case-insensitively). Trim + lowercase. The infra layer must key
-/// the `email → person` map with the same normalization.
+/// Case-fold an email for grouping / lookup (ADR-0011: matched
+/// case-insensitively). Lowercases only — it does **not** trim, matching the
+/// .NET seed path (`StringComparer.OrdinalIgnoreCase` + "store as-is"):
+/// surrounding whitespace is significant, so two accounts that differ only by
+/// stray whitespace resolve to distinct persons, exactly as the .NET seeder
+/// does. Blank/whitespace-only values are treated as "no email" by the callers.
+/// The infra layer must key the `email → person` map with the same function.
 #[must_use]
 pub fn normalize_email(email: &str) -> String {
-    email.trim().to_lowercase()
+    email.to_lowercase()
 }
 
 /// Group profiles that share the same current email into one group; profiles
@@ -120,7 +124,7 @@ pub fn group_by_email(profiles: Vec<SeedProfile>) -> Vec<ProfileGroup> {
             .latest_email
             .as_deref()
             .map(normalize_email)
-            .filter(|e| !e.is_empty())
+            .filter(|e| !e.trim().is_empty())
         {
             Some(email) => by_email.entry(email).or_default().push(profile),
             None => singletons.push(ProfileGroup {
@@ -174,7 +178,7 @@ pub fn resolve_assignments(
             .latest_email
             .as_deref()
             .map(normalize_email)
-            .filter(|e| !e.is_empty());
+            .filter(|e| !e.trim().is_empty());
         let Some(email) = email else {
             out.skipped_no_email += group.profiles.len();
             continue;
@@ -395,6 +399,22 @@ mod tests {
         assert!(
             anna.is_some_and(|g| g.profiles.len() == 2),
             "case variants merge into one group"
+        );
+    }
+
+    #[test]
+    fn emails_are_case_folded_but_not_trimmed() {
+        // Case variants merge; a trailing-space variant stays a separate group —
+        // parity with the .NET seeder (OrdinalIgnoreCase + store-as-is, no trim).
+        let groups = group_by_email(vec![
+            prof("bamboohr", "1", Some("anna@corp.com"), false),
+            prof("slack", "U1", Some("ANNA@corp.com"), false), // case → merges
+            prof("zoom", "Z1", Some("anna@corp.com "), false), // trailing space → distinct
+        ]);
+        assert_eq!(
+            groups.len(),
+            2,
+            "case merges into one group; trailing-space stays separate"
         );
     }
 
