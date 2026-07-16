@@ -3024,6 +3024,8 @@ dependencies = [
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "clap",
+ "clickhouse",
+ "insight-clickhouse",
  "sea-orm",
  "serde",
  "serde_json",
