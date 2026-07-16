@@ -285,6 +285,7 @@ pub async fn current_parents_for_child(
         WHERE insight_tenant_id = ?
           AND child_person_id   = ?
           AND valid_to IS NULL
+          AND parent_person_id IS NOT NULL
         ORDER BY insight_source_type, insight_source_id
     ";
 

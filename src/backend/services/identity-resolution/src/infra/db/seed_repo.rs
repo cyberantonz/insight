@@ -184,14 +184,16 @@ pub async fn apply(
     rows: &[SeedObservationRow],
 ) -> anyhow::Result<u64> {
     // Idempotent insert — uq_person_observation dedups a re-emitted identical
-    // observation; INSERT IGNORE swallows the duplicate-key error.
-    const INSERT_OBSERVATION: &str = r"
-        INSERT IGNORE INTO persons
-            (value_type, insight_source_type, insight_source_id, insight_tenant_id,
-             value_id, value_full_text, value,
-             person_id, author_person_id, reason, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ";
+    // observation; INSERT IGNORE swallows the duplicate-key error. Batched
+    // (multi-row VALUES) so N observations cost ~N/INSERT_CHUNK round-trips
+    // instead of N — 25k+ single-row inserts over a remote pool take minutes;
+    // batches take seconds. Same semantics as per-row INSERT IGNORE.
+    const INSERT_PREFIX: &str = "INSERT IGNORE INTO persons \
+        (value_type, insight_source_type, insight_source_id, insight_tenant_id, \
+         value_id, value_full_text, value, person_id, author_person_id, reason, \
+         created_at) VALUES ";
+    const ROW_TUPLE: &str = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const INSERT_CHUNK: usize = 500; // 500 rows × 11 cols = 5500 binds (< 65535)
     const DELETE_APM: &str = "DELETE FROM account_person_map WHERE insight_tenant_id = ?";
     const INSERT_APM: &str = r"
         INSERT INTO account_person_map
@@ -439,29 +441,33 @@ pub async fn apply(
     let txn = db.begin().await?;
 
     let mut inserted = 0u64;
-    for r in rows {
-        let params: Vec<Value> = vec![
-            r.value_type.clone().into(),
-            r.source_type.clone().into(),
-            r.source_id.as_bytes().to_vec().into(),
-            tenant_bytes.clone().into(),
-            r.value_id.clone().into(),
-            r.value_full_text.clone().into(),
-            r.value.clone().into(),
-            r.person_id.as_bytes().to_vec().into(),
-            r.author_person_id.as_bytes().to_vec().into(),
-            r.reason.clone().into(),
-            r.created_at.into(),
-        ];
+    for chunk in rows.chunks(INSERT_CHUNK) {
+        let values = vec![ROW_TUPLE; chunk.len()].join(", ");
+        let sql = format!("{INSERT_PREFIX}{values}");
+        let mut params: Vec<Value> = Vec::with_capacity(chunk.len() * 11);
+        for r in chunk {
+            params.push(r.value_type.clone().into());
+            params.push(r.source_type.clone().into());
+            params.push(r.source_id.as_bytes().to_vec().into());
+            params.push(tenant_bytes.clone().into());
+            params.push(r.value_id.clone().into());
+            params.push(r.value_full_text.clone().into());
+            params.push(r.value.clone().into());
+            params.push(r.person_id.as_bytes().to_vec().into());
+            params.push(r.author_person_id.as_bytes().to_vec().into());
+            params.push(r.reason.clone().into());
+            params.push(r.created_at.into());
+        }
         let res = txn
             .execute(Statement::from_sql_and_values(
                 DbBackend::MySql,
-                INSERT_OBSERVATION,
+                &sql,
                 params,
             ))
             .await?;
         inserted += res.rows_affected();
     }
+    tracing::info!(inserted, "persons-seed apply: observations inserted");
 
     // Rebuild account_person_map for the tenant (delete + reinsert).
     txn.execute(Statement::from_sql_and_values(
@@ -476,6 +482,7 @@ pub async fn apply(
         [tenant_bytes.clone().into()],
     ))
     .await?;
+    tracing::info!("persons-seed apply: account_person_map rebuilt");
 
     // Rebuild org_chart for the tenant. The CTE binds the tenant six times, then
     // the author once — same order as INSERT_ORG_CHART's `?` markers.
@@ -499,6 +506,7 @@ pub async fn apply(
         ],
     ))
     .await?;
+    tracing::info!("persons-seed apply: org_chart rebuilt");
 
     txn.commit().await?;
     Ok(inserted)

@@ -81,6 +81,7 @@ where
 {
     // 1. Build per-account profiles from the (latest-first) input stream.
     let rows = reader.stream(tenant_id).await?;
+    tracing::info!(input_rows = rows.len(), "persons-seed: input streamed");
     let profiles = build_profiles(rows);
     let accounts_read = profiles.len();
 
@@ -89,12 +90,24 @@ where
     let known = store.known_account_bindings(tenant_id).await?;
     let email_to_person = store.latest_email_to_person(tenant_id).await?;
     let outcome = resolve_assignments(groups, &known, &email_to_person, mint);
+    tracing::info!(
+        accounts = accounts_read,
+        minted = outcome.minted,
+        reused = outcome.reused_known,
+        linked = outcome.linked_by_email,
+        "persons-seed: resolved"
+    );
 
     // 3. Materialize the resolved observations and apply them.
     let observation_rows = assignments_to_rows(&outcome.assignments, author_person_id);
+    tracing::info!(
+        observation_rows = observation_rows.len(),
+        "persons-seed: applying"
+    );
     let observations_inserted = store
         .apply(tenant_id, author_person_id, &observation_rows)
         .await?;
+    tracing::info!(observations_inserted, "persons-seed: applied");
 
     Ok(SeedSummary {
         accounts_read,

@@ -26,13 +26,13 @@ use crate::domain::seed_service::IdentityInputsReader;
 /// derived from `operation_type`.
 const STREAM_SQL: &str = r"
     SELECT
-        insight_source_type              AS source_type,
+        ifNull(insight_source_type, '')  AS source_type,
         toString(insight_source_id)      AS source_id,
-        source_account_id,
-        value_type,
-        value,
+        ifNull(source_account_id, '')    AS source_account_id,
+        ifNull(value_type, '')           AS value_type,
+        ifNull(value, '')                AS value,
         toString(_synced_at)             AS synced_at,
-        operation_type
+        ifNull(operation_type, '')       AS operation_type
     FROM identity.identity_inputs
     WHERE insight_tenant_id = ?
       AND operation_type IN ('UPSERT', 'DELETE')
