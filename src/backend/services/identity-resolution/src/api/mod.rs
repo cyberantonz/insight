@@ -3,6 +3,7 @@
 pub(crate) mod canonical_json;
 pub mod error;
 mod handlers;
+pub mod seed;
 
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::middleware::from_fn;
 use sea_orm::DatabaseConnection;
+use tokio::sync::mpsc;
 use toolkit::api::{OpenApiRegistry, OperationBuilder};
 
 use crate::auth;
@@ -22,8 +24,10 @@ use crate::domain::profile;
 pub struct AppState {
     /// MariaDB connection pool (SeaORM) — reads `persons` / `account_person_map`.
     pub db: DatabaseConnection,
-    /// Gear config (e.g. `org_chart_source_type` for parent/supervisor lookup).
+    /// Gear config (`org_chart_source_type`, `clickhouse_*`, …).
     pub config: GearConfig,
+    /// Sender to the persons-seed worker's job queue (POST enqueues here).
+    pub seed_tx: mpsc::Sender<seed::PersonsSeedJob>,
 }
 
 /// Mount the identity-resolution routes onto the host's router.
@@ -63,7 +67,7 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
 
     // Deprecated: successor is POST /v1/profiles. Kept for existing callers
     // (authenticator, analytics) until they migrate; emits RFC 8594 headers.
-    OperationBuilder::get("/v1/persons/{email}")
+    let router = OperationBuilder::get("/v1/persons/{email}")
         .operation_id("identity_resolution.persons.get")
         .summary("Resolve a person by email (deprecated; use POST /v1/profiles)")
         .authenticated()
@@ -75,5 +79,50 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .standard_errors(openapi)
         .handler(handlers::get_person_by_email)
+        .register(router, openapi);
+
+    // Persons-seed (async job): enqueue + poll. Admin-gated in .NET; not enforced
+    // here (auth-disabled host).
+    let router = OperationBuilder::post("/v1/persons-seed")
+        .operation_id("identity_resolution.persons_seed.create")
+        .summary("Enqueue a persons-seed run (async)")
+        .authenticated()
+        .no_license_required()
+        .json_request::<seed::PersonsSeedRequest>(openapi, "Seed options")
+        .json_response_with_schema::<seed::PersonsSeedOperationResponse>(
+            openapi,
+            StatusCode::ACCEPTED,
+            "Queued operation",
+        )
+        .standard_errors(openapi)
+        .handler(seed::create_persons_seed)
+        .register(router, openapi);
+
+    let router = OperationBuilder::get("/v1/persons-seed/{id}")
+        .operation_id("identity_resolution.persons_seed.get")
+        .summary("Get a persons-seed operation")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<seed::PersonsSeedOperationResponse>(
+            openapi,
+            StatusCode::OK,
+            "Operation status",
+        )
+        .standard_errors(openapi)
+        .handler(seed::get_persons_seed)
+        .register(router, openapi);
+
+    OperationBuilder::get("/v1/persons-seed")
+        .operation_id("identity_resolution.persons_seed.list")
+        .summary("List persons-seed operations")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<seed::PersonsSeedListResponse>(
+            openapi,
+            StatusCode::OK,
+            "Operations",
+        )
+        .standard_errors(openapi)
+        .handler(seed::list_persons_seed)
         .register(router, openapi)
 }

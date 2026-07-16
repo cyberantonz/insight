@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use serde::Serialize;
 use uuid::Uuid;
 
 use super::seed::{
@@ -43,7 +44,7 @@ pub trait SeedStore {
 
 /// Outcome of one persons-seed run (feeds the operation status). Mirrors the
 /// .NET `PersonsSeedSummary` (org-chart counter lands with that rebuild).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SeedSummary {
     pub accounts_read: usize,
     pub reused_known: usize,

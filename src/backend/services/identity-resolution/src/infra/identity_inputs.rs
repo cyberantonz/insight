@@ -121,8 +121,14 @@ mod tests {
     fn parses_clickhouse_datetime_with_and_without_fraction() -> anyhow::Result<()> {
         let with_frac = parse_ch_datetime("2026-07-16 12:34:56.123456")?;
         let no_frac = parse_ch_datetime("2026-07-16 12:34:56")?;
-        assert_eq!(with_frac.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-07-16 12:34:56");
-        assert_eq!(no_frac.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-07-16 12:34:56");
+        assert_eq!(
+            with_frac.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-07-16 12:34:56"
+        );
+        assert_eq!(
+            no_frac.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-07-16 12:34:56"
+        );
         assert!(parse_ch_datetime("not-a-date").is_err());
         Ok(())
     }
@@ -138,7 +144,9 @@ mod tests {
             std::env::var("IDENTITY_TEST_CH_DB"),
             std::env::var("IDENTITY_TEST_TENANT_ID"),
         ) else {
-            eprintln!("skip: set IDENTITY_TEST_CH_URL + IDENTITY_TEST_CH_DB + IDENTITY_TEST_TENANT_ID to run");
+            eprintln!(
+                "skip: set IDENTITY_TEST_CH_URL + IDENTITY_TEST_CH_DB + IDENTITY_TEST_TENANT_ID to run"
+            );
             return Ok(());
         };
         let user = std::env::var("IDENTITY_TEST_CH_USER").unwrap_or_default();
@@ -147,7 +155,10 @@ mod tests {
 
         let reader = ClickHouseIdentityInputsReader::connect(&url, &db, &user, &password);
         let rows = reader.stream(tenant).await?;
-        assert!(!rows.is_empty(), "dev tenant should have identity_inputs rows");
+        assert!(
+            !rows.is_empty(),
+            "dev tenant should have identity_inputs rows"
+        );
         Ok(())
     }
 }
