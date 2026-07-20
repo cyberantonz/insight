@@ -6,17 +6,17 @@
 //! completed/failed. The GETs poll status. Ported from the .NET
 //! `PersonsSeedEndpoints` + `PersonsSeedQueue`.
 //!
-//! NOTE: not yet verified end-to-end against live ClickHouse + MariaDB — the
-//! wiring compiles and mirrors the .NET flow, but a live seed run is the real
-//! gate. Admin-gating (the .NET `CallerAdminCheck`) is not enforced here — the
-//! auth-disabled host, same deferral as the read caller-gate.
+//! Admin-gated like the .NET `CallerAdminCheck`: the caller is resolved from the
+//! `X-Insight-Person-Id` header and must hold an active `admin` role in the
+//! tenant, and is recorded as the seed author. The .NET JWT id/email-claim
+//! fallbacks are deferred until gears auth carries a subject.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Extension, Path, Query};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
@@ -32,10 +32,16 @@ use super::error::PersonsSeedError;
 use crate::config::GearConfig;
 use crate::domain::seed_service::run_seed;
 use crate::infra::db::ops_repo::{self, Operation, OperationStatus};
+use crate::infra::db::roles_repo;
 use crate::infra::db::seed_repo::MariaDbSeedStore;
 use crate::infra::identity_inputs::ClickHouseIdentityInputsReader;
 
 const LINK_BY_EMAIL_MODE: &str = "link_by_email";
+
+/// Header carrying the caller's `person_id`, parity with the .NET
+/// `HeaderCallerContext`. JWT id/email-claim fallbacks are deferred until gears
+/// auth carries a subject (the host runs auth-disabled today — no claims).
+const CALLER_HEADER: &str = "X-Insight-Person-Id";
 
 /// Upper bound on one seed run in the serial worker; a stall past this fails the
 /// job rather than wedging the whole queue.
@@ -108,6 +114,7 @@ pub struct ListParams {
 pub async fn create_persons_seed(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
+    headers: HeaderMap,
     CanonicalJson(req): CanonicalJson<PersonsSeedRequest>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let mode = req
@@ -127,9 +134,30 @@ pub async fn create_persons_seed(
     }
 
     let tenant = ctx.subject_tenant_id();
-    // No caller-gate on the auth-disabled host → nil author (the .NET service
-    // records the admin caller here). Flagged; revisited with the caller gate.
-    let author = Uuid::nil();
+
+    // Admin gate — parity with the .NET `CallerAdminCheck`: resolve the caller
+    // from the `X-Insight-Person-Id` header, then require an active `admin` role
+    // in the tenant. The resolved caller is recorded as the author of the job
+    // and every seeded observation.
+    let author = resolve_caller(&headers).ok_or_else(|| {
+        CanonicalError::unauthenticated()
+            .with_reason(format!(
+                "caller not identified; send the {CALLER_HEADER} header"
+            ))
+            .create()
+    })?;
+    let is_admin = roles_repo::has_active_admin(&state.db, tenant, author)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "admin role check failed");
+            CanonicalError::internal("failed to verify caller permissions").create()
+        })?;
+    if !is_admin {
+        return Err(PersonsSeedError::permission_denied()
+            .with_reason("admin role required for this operation")
+            .create());
+    }
+
     let operation_id = Uuid::now_v7();
     let request_json = serde_json::json!({ "mode": mode }).to_string();
 
@@ -225,6 +253,17 @@ async fn load_op(
         .ok_or_else(|| CanonicalError::internal("operation vanished after enqueue").create())
 }
 
+/// Resolve the caller's `person_id` from the `X-Insight-Person-Id` header —
+/// the header branch of the .NET `HeaderCallerContext` (present, parseable,
+/// non-nil). Returns `None` when absent/blank/malformed/nil, which the handler
+/// maps to 401. The JWT id/email-claim fallbacks are intentionally not ported
+/// yet (auth-disabled host → no claims to read).
+fn resolve_caller(headers: &HeaderMap) -> Option<Uuid> {
+    let raw = headers.get(CALLER_HEADER)?.to_str().ok()?;
+    let id = Uuid::parse_str(raw.trim()).ok()?;
+    (!id.is_nil()).then_some(id)
+}
+
 fn parse_status(s: &str) -> Result<OperationStatus, CanonicalError> {
     match s {
         "queued" => Ok(OperationStatus::Queued),
@@ -313,5 +352,45 @@ pub async fn run_worker(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_with(value: &str) -> anyhow::Result<HeaderMap> {
+        let mut h = HeaderMap::new();
+        h.insert(CALLER_HEADER, value.parse()?);
+        Ok(h)
+    }
+
+    #[test]
+    fn resolve_caller_reads_valid_person_header() -> anyhow::Result<()> {
+        let id = Uuid::from_u128(0x1234_5678_9abc_def0);
+        assert_eq!(resolve_caller(&headers_with(&id.to_string())?), Some(id));
+        // Surrounding whitespace is tolerated.
+        assert_eq!(
+            resolve_caller(&headers_with(&format!("  {id}  "))?),
+            Some(id)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_caller_rejects_missing_blank_nil_and_malformed() -> anyhow::Result<()> {
+        assert_eq!(resolve_caller(&HeaderMap::new()), None, "absent header");
+        assert_eq!(resolve_caller(&headers_with("")?), None, "blank");
+        assert_eq!(
+            resolve_caller(&headers_with("not-a-uuid")?),
+            None,
+            "malformed"
+        );
+        assert_eq!(
+            resolve_caller(&headers_with(&Uuid::nil().to_string())?),
+            None,
+            "nil uuid is not a caller"
+        );
+        Ok(())
     }
 }

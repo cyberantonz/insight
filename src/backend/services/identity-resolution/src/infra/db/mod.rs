@@ -7,6 +7,7 @@
 pub mod entities;
 pub mod ops_repo;
 pub mod persons_repo;
+pub mod roles_repo;
 pub mod seed_repo;
 
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
