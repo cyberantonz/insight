@@ -1,13 +1,16 @@
 //! ClickHouse reader for `identity.identity_inputs` — the raw observation
 //! stream that feeds the persons-seed. Concrete `IdentityInputsReader` over the
 //! shared `insight-clickhouse` client. Query ported from the .NET
-//! `ClickHouseIdentityInputsReader`.
+//! `ClickHouseIdentityInputsReader`. Verified against a live dev ClickHouse
+//! (the persons-seed reads its whole input through this).
 //!
-//! NOTE: not yet verified against a live ClickHouse — the query text / column
-//! names / bind semantics mirror the .NET reader, but the env-gated test below
-//! is the only runtime check and it skips without a ClickHouse.
+//! NOTE: this materializes the tenant's filtered input into a `Vec` rather than
+//! streaming row-by-row like the .NET `IAsyncEnumerable`. Fine at current tenant
+//! sizes; row-streaming is deferred to the hardening pass (#1753).
 
 #![allow(dead_code)]
+
+use std::time::Duration;
 
 use async_trait::async_trait;
 use clickhouse::Row;
@@ -16,23 +19,34 @@ use sea_orm::prelude::DateTime;
 use serde::Deserialize;
 use uuid::Uuid;
 
+/// A full tenant input scan can outrun the client's 30s default; the seed run as
+/// a whole is bounded by `SEED_TIMEOUT`, so give the read generous headroom.
+const READ_TIMEOUT: Duration = Duration::from_mins(5);
+
 use crate::domain::seed::IdentityInputRow;
 use crate::domain::seed_service::IdentityInputsReader;
 
 /// Verbatim shape from `ClickHouseIdentityInputsReader`: rows ordered so the
 /// FIRST per account is the latest (`_synced_at DESC`), which is exactly what
-/// `build_profiles` expects. `insight_tenant_id` / `insight_source_id` are
-/// stored as UUIDs, so they are `toString`-ed and reparsed. `is_delete` is
-/// derived from `operation_type`.
+/// `build_profiles` expects. `insight_source_id` is `toString`-ed and reparsed.
+///
+/// The text columns have mixed nullability in `identity_inputs` (e.g.
+/// `insight_source_type` is `String`, `source_account_id` is `Nullable(String)`),
+/// and the clickhouse decoder is strict in both directions — so each is coerced
+/// to a non-null `String` with `ifNull(col, '')` and decoded uniformly. Crucially
+/// the aliases DIFFER from the source column names (`val`, `op_type`, …): a
+/// same-name `ifNull(value,'') AS value` would shadow the `value` referenced in
+/// `WHERE` and can trip a ClickHouse "Cyclic aliases" error (the .NET reader
+/// avoids this the same way). `is_delete` is derived from `operation_type`.
 const STREAM_SQL: &str = r"
     SELECT
         ifNull(insight_source_type, '')  AS source_type,
         toString(insight_source_id)      AS source_id,
-        ifNull(source_account_id, '')    AS source_account_id,
-        ifNull(value_type, '')           AS value_type,
-        ifNull(value, '')                AS value,
+        ifNull(source_account_id, '')    AS account_id,
+        ifNull(value_type, '')           AS val_type,
+        ifNull(value, '')                AS val,
         toString(_synced_at)             AS synced_at,
-        ifNull(operation_type, '')       AS operation_type
+        ifNull(operation_type, '')       AS op_type
     FROM identity.identity_inputs
     WHERE insight_tenant_id = ?
       AND operation_type IN ('UPSERT', 'DELETE')
@@ -51,11 +65,11 @@ const STREAM_SQL: &str = r"
 struct InputRow {
     source_type: String,
     source_id: String,
-    source_account_id: String,
-    value_type: String,
-    value: String,
+    account_id: String,
+    val_type: String,
+    val: String,
     synced_at: String,
-    operation_type: String,
+    op_type: String,
 }
 
 /// Reads `identity_inputs` from ClickHouse via the shared client.
@@ -72,7 +86,7 @@ impl ClickHouseIdentityInputsReader {
     /// Build a reader from connection settings (empty user → no auth).
     #[must_use]
     pub fn connect(url: &str, database: &str, user: &str, password: &str) -> Self {
-        let mut config = Config::new(url, database);
+        let mut config = Config::new(url, database).with_query_timeout(READ_TIMEOUT);
         if !user.is_empty() {
             config = config.with_auth(user, password);
         }
@@ -97,11 +111,11 @@ fn map_row(r: InputRow) -> anyhow::Result<IdentityInputRow> {
     Ok(IdentityInputRow {
         source_type: r.source_type,
         source_id: Uuid::parse_str(&r.source_id)?,
-        source_account_id: r.source_account_id,
-        value_type: r.value_type,
-        value: r.value,
+        source_account_id: r.account_id,
+        value_type: r.val_type,
+        value: r.val,
         synced_at: parse_ch_datetime(&r.synced_at)?,
-        is_delete: r.operation_type == "DELETE",
+        is_delete: r.op_type == "DELETE",
     })
 }
 

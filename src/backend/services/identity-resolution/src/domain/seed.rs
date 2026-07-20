@@ -192,10 +192,12 @@ pub fn resolve_assignments(
         }
 
         // The group's email — shared by every profile in an email group;
-        // singleton no-email groups have none.
-        let email = group.profiles[0]
-            .latest_email
-            .as_deref()
+        // singleton no-email groups have none. (`first` is always `Some` here —
+        // groups are never empty by construction — but avoid the panicking index.)
+        let email = group
+            .profiles
+            .first()
+            .and_then(|p| p.latest_email.as_deref())
             .map(normalize_email)
             .filter(|e| !e.trim().is_empty());
         let Some(email) = email else {

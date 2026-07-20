@@ -176,6 +176,12 @@ pub async fn create_persons_seed(
     headers: HeaderMap,
     CanonicalJson(req): CanonicalJson<PersonsSeedRequest>,
 ) -> Result<impl IntoResponse, CanonicalError> {
+    let tenant = ctx.subject_tenant_id();
+    // Admin gate first (parity with .NET: the caller/admin check precedes mode
+    // validation, so an unauthenticated/non-admin caller gets 401/403, not 400).
+    // The resolved caller is recorded as the author of the job + observations.
+    let author = require_admin(&state.db, &headers, tenant).await?;
+
     let mode = req
         .mode
         .as_deref()
@@ -189,31 +195,6 @@ pub async fn create_persons_seed(
                 "unsupported mode; only 'link-by-email' is available",
                 "INVALID",
             )
-            .create());
-    }
-
-    let tenant = ctx.subject_tenant_id();
-
-    // Admin gate — parity with the .NET `CallerAdminCheck`: resolve the caller
-    // from the `X-Insight-Person-Id` header, then require an active `admin` role
-    // in the tenant. The resolved caller is recorded as the author of the job
-    // and every seeded observation.
-    let author = resolve_caller(&headers).ok_or_else(|| {
-        CanonicalError::unauthenticated()
-            .with_reason(format!(
-                "caller not identified; send the {CALLER_HEADER} header"
-            ))
-            .create()
-    })?;
-    let is_admin = roles_repo::has_active_admin(&state.db, tenant, author)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "admin role check failed");
-            CanonicalError::internal("failed to verify caller permissions").create()
-        })?;
-    if !is_admin {
-        return Err(PersonsSeedError::permission_denied()
-            .with_reason("admin role required for this operation")
             .create());
     }
 
@@ -249,6 +230,14 @@ pub async fn create_persons_seed(
             .create());
     }
 
+    // Audit the enqueue (parity with the .NET `persons_seed.enqueue` audit).
+    tracing::info!(
+        %operation_id,
+        %mode,
+        author_person_id = %author,
+        "persons_seed.enqueue"
+    );
+
     // Build the 202 body from the in-memory snapshot (always `queued`) and set
     // Location to the status URL — no re-read of the just-inserted row.
     let body = PersonsSeedOperationResponse::queued(
@@ -266,9 +255,12 @@ pub async fn create_persons_seed(
 pub async fn get_persons_seed(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
+    // Same admin gate as POST (parity — the .NET service gates all three routes).
+    require_admin(&state.db, &headers, tenant).await?;
     let op = ops_repo::get_by_id(&state.db, tenant, id)
         .await
         .map_err(|e| {
@@ -289,9 +281,12 @@ pub async fn get_persons_seed(
 pub async fn list_persons_seed(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
+    headers: HeaderMap,
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
+    // Same admin gate as POST (parity — the .NET service gates all three routes).
+    require_admin(&state.db, &headers, tenant).await?;
     let status = status_filter(params.status.as_deref());
     let limit = params
         .limit
@@ -311,6 +306,36 @@ pub async fn list_persons_seed(
         items,
         next_cursor: None,
     }))
+}
+
+/// The persons-seed admin gate, applied to every route (parity with the .NET
+/// `CallerAdminCheck`): resolve the caller from the header, then require an
+/// active `admin` role in the tenant. Returns the caller `person_id`, or 401
+/// (no caller) / 403 (not admin).
+async fn require_admin(
+    db: &DatabaseConnection,
+    headers: &HeaderMap,
+    tenant: Uuid,
+) -> Result<Uuid, CanonicalError> {
+    let caller = resolve_caller(headers).ok_or_else(|| {
+        CanonicalError::unauthenticated()
+            .with_reason(format!(
+                "caller not identified; send the {CALLER_HEADER} header"
+            ))
+            .create()
+    })?;
+    let is_admin = roles_repo::has_active_admin(db, tenant, caller)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "admin role check failed");
+            CanonicalError::internal("failed to verify caller permissions").create()
+        })?;
+    if !is_admin {
+        return Err(PersonsSeedError::permission_denied()
+            .with_reason("admin role required for this operation")
+            .create());
+    }
+    Ok(caller)
 }
 
 /// Resolve the caller's `person_id` from the `X-Insight-Person-Id` header —

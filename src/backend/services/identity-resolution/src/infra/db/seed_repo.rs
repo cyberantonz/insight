@@ -6,8 +6,8 @@
 //!   * the transactional `apply` — `INSERT IGNORE` the resolved observations
 //!     into `persons`, then rebuild the tenant's `account_person_map` (SCD2).
 //!
-//! `org_chart` rebuild + the `ClickHouse` `identity_inputs` reader land in later
-//! slices. All SQL is verbatim from the .NET service for parity.
+//! The transactional `apply` also rebuilds `org_chart`. All SQL is verbatim
+//! from the .NET service for parity.
 
 #![allow(dead_code)]
 

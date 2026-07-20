@@ -1,10 +1,11 @@
 //! The identity-resolution gear.
 //!
 //! Runs on the `api-gateway` system gear (the REST host) under
-//! `toolkit::bootstrap::run_server`. Runtime construction (config, and — next
-//! step — the MariaDB pool) happens in [`IdentityResolutionGear::init`]. No
-//! domain routes yet: [`IdentityResolutionGear::register_rest`] returns the host
-//! router unchanged for now.
+//! `toolkit::bootstrap::run_server`. [`IdentityResolutionGear::init`] builds the
+//! runtime (MariaDB pool + persons-seed worker); [`register_rest`] mounts the
+//! profile-read and persons-seed routes on the host router.
+//!
+//! [`register_rest`]: IdentityResolutionGear::register_rest
 
 use std::sync::{Arc, OnceLock};
 
