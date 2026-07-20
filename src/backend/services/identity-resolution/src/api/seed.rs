@@ -12,6 +12,7 @@
 //! auth-disabled host, same deferral as the read caller-gate.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Extension, Path, Query};
@@ -35,6 +36,10 @@ use crate::infra::db::seed_repo::MariaDbSeedStore;
 use crate::infra::identity_inputs::ClickHouseIdentityInputsReader;
 
 const LINK_BY_EMAIL_MODE: &str = "link_by_email";
+
+/// Upper bound on one seed run in the serial worker; a stall past this fails the
+/// job rather than wedging the whole queue.
+const SEED_TIMEOUT: Duration = Duration::from_mins(10);
 const PERSONS_SEED_OP: &str = "persons-seed";
 
 /// A queued persons-seed job handed from the POST handler to the worker.
@@ -193,7 +198,7 @@ pub async fn list_persons_seed(
         None | Some("") => None,
         Some(s) => Some(parse_status(s)?),
     };
-    let ops = ops_repo::list(&state.db, tenant, status)
+    let ops = ops_repo::list(&state.db, tenant, Some(PERSONS_SEED_OP), status)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "list operations failed");
@@ -201,7 +206,6 @@ pub async fn list_persons_seed(
         })?;
     let items = ops
         .into_iter()
-        .filter(|o| o.operation_type == PERSONS_SEED_OP)
         .map(PersonsSeedOperationResponse::from)
         .collect();
     Ok(Json(PersonsSeedListResponse { items }))
@@ -259,20 +263,33 @@ pub async fn run_worker(
             Ok(true) => {}
             Ok(false) => continue,
             Err(e) => {
+                // A transient DB blip on the queued→running transition must not
+                // strand the (already-consumed) job as a zombie `queued` row —
+                // mark it failed so it isn't stuck forever, like the queue-full
+                // path in `create_persons_seed`.
                 tracing::error!(error = %e, operation_id = %job.operation_id, "try_start failed");
+                let _ =
+                    ops_repo::fail(&db, job.operation_id, "try_start failed; retry later").await;
                 continue;
             }
         }
 
-        match run_seed(
+        // Bound each run: the worker is single-threaded and serial, so a hung
+        // ClickHouse/MariaDB call would otherwise block every subsequent job for
+        // every tenant until the process restarts. Generous ceiling — a healthy
+        // large-tenant seed is seconds; this only trips on a real stall.
+        let seed = run_seed(
             &reader,
             &store,
             job.tenant_id,
             job.author_person_id,
             Uuid::now_v7,
-        )
-        .await
-        {
+        );
+        let result = tokio::time::timeout(SEED_TIMEOUT, seed)
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("persons-seed timed out")));
+
+        match result {
             Ok(summary) => {
                 let summary_json =
                     serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_owned());
@@ -281,8 +298,17 @@ pub async fn run_worker(
                 }
             }
             Err(e) => {
+                // Log the real error server-side, but persist only a generic
+                // message: `error_message` is returned verbatim by the GET/list
+                // endpoints, so raw driver/anyhow text must not leak to callers.
                 tracing::error!(error = %e, operation_id = %job.operation_id, "persons-seed failed");
-                if let Err(e2) = ops_repo::fail(&db, job.operation_id, &e.to_string()).await {
+                if let Err(e2) = ops_repo::fail(
+                    &db,
+                    job.operation_id,
+                    "persons-seed failed; see server logs",
+                )
+                .await
+                {
                     tracing::error!(error = %e2, operation_id = %job.operation_id, "fail update failed");
                 }
             }

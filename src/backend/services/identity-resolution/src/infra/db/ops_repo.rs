@@ -63,6 +63,9 @@ pub struct Operation {
 const COLUMNS: &str = "operation_id, operation_type, status, insight_tenant_id, author_person_id, \
      request_json, summary_json, error_message, started_at, completed_at";
 
+/// Page cap for [`list`] — a compile-time literal, never interpolated user input.
+const LIST_LIMIT: &str = "200";
+
 /// Insert a new `queued` operation.
 ///
 /// # Errors
@@ -193,7 +196,10 @@ pub async fn get_by_id(
     row.map(|r| row_to_operation(&r)).transpose()
 }
 
-/// List operations for the tenant (newest first), optionally filtered by status.
+/// List operations for the tenant (newest first), optionally filtered by
+/// `operation_type` and `status`. Capped at [`LIST_LIMIT`] rows — the shared
+/// `operations` table holds every job kind, so callers push their type filter
+/// (and the cap) into SQL rather than scanning + filtering in application code.
 ///
 /// # Errors
 ///
@@ -201,15 +207,21 @@ pub async fn get_by_id(
 pub async fn list(
     db: &DatabaseConnection,
     tenant_id: Uuid,
+    operation_type: Option<&str>,
     status: Option<OperationStatus>,
 ) -> anyhow::Result<Vec<Operation>> {
     let mut sql = format!("SELECT {COLUMNS} FROM operations WHERE insight_tenant_id = ?");
     let mut params: Vec<sea_orm::Value> = vec![tenant_id.as_bytes().to_vec().into()];
+    if let Some(t) = operation_type {
+        sql.push_str(" AND operation_type = ?");
+        params.push(t.into());
+    }
     if let Some(s) = status {
         sql.push_str(" AND status = ?");
         params.push(s.as_db().into());
     }
-    sql.push_str(" ORDER BY started_at DESC");
+    sql.push_str(" ORDER BY started_at DESC LIMIT ");
+    sql.push_str(LIST_LIMIT);
 
     let rows = db
         .query_all(Statement::from_sql_and_values(

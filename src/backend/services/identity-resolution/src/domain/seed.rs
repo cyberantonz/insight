@@ -97,6 +97,11 @@ pub struct ResolveOutcome {
     pub minted: usize,
     pub skipped_closed: usize,
     pub skipped_no_email: usize,
+    /// Email groups whose accounts were already bound to *more than one*
+    /// existing person; the group is still collapsed onto the first binding
+    /// (parity with the .NET resolver), but the conflict is counted + logged
+    /// so a silent identity merge is observable.
+    pub known_binding_conflicts: usize,
 }
 
 /// Case-fold an email for grouping / lookup (ADR-0011: matched
@@ -157,12 +162,26 @@ pub fn resolve_assignments(
 
     for group in groups {
         // 1. Known binding wins — reuse the person for the whole group, even
-        //    when the group also has no email (idempotent re-seed).
-        if let Some(pid) = group
+        //    when the group also has no email (idempotent re-seed). If the
+        //    group's accounts are bound to *different* persons (e.g. an email
+        //    reassigned after a departure), we still collapse onto the first
+        //    binding for .NET parity, but surface the conflict — otherwise the
+        //    other account's identity is silently merged away.
+        let bound: Vec<Uuid> = group
             .profiles
             .iter()
-            .find_map(|p| known.get(&p.account).copied())
-        {
+            .filter_map(|p| known.get(&p.account).copied())
+            .collect();
+        if let Some(&pid) = bound.first() {
+            if bound.iter().any(|&other| other != pid) {
+                out.known_binding_conflicts += 1;
+                tracing::warn!(
+                    person_id = %pid,
+                    accounts = group.profiles.len(),
+                    "persons-seed: group accounts bound to multiple persons; \
+                     collapsing onto the first (possible identity merge)"
+                );
+            }
             out.reused_known += group.profiles.len();
             out.assignments.push(PersonAssignment {
                 person_id: pid,
@@ -488,6 +507,36 @@ mod tests {
         assert_eq!(out.reused_known, 2, "both accounts in the group counted");
         assert_eq!(out.assignments[0].person_id, Uuid::from_u128(5));
         assert_eq!(out.assignments[0].profiles.len(), 2);
+        assert_eq!(
+            out.known_binding_conflicts, 0,
+            "single binding, no conflict"
+        );
+    }
+
+    #[test]
+    fn multi_person_binding_conflict_collapses_and_is_counted() {
+        // Two accounts share an email but are already bound to two *different*
+        // persons (email reassigned after a departure). The group still
+        // collapses onto the first binding (.NET parity), but the conflict is
+        // counted so the silent identity merge is observable.
+        let acc_a = prof("slack", "U1", Some("anna@corp.com"), false);
+        let acc_b = prof("github", "gh1", Some("anna@corp.com"), false);
+        let mut known = HashMap::new();
+        known.insert(acc_a.account.clone(), Uuid::from_u128(5));
+        known.insert(acc_b.account.clone(), Uuid::from_u128(6));
+
+        let out = resolve_assignments(
+            group_by_email(vec![acc_a, acc_b]),
+            &known,
+            &HashMap::new(),
+            counter(),
+        );
+        assert_eq!(out.assignments.len(), 1, "group collapsed onto one person");
+        assert_eq!(out.reused_known, 2);
+        assert_eq!(
+            out.known_binding_conflicts, 1,
+            "conflict detected + counted"
+        );
     }
 
     fn input(

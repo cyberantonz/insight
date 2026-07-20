@@ -57,6 +57,8 @@ pub struct SeedSummary {
     pub minted: usize,
     pub skipped_closed: usize,
     pub skipped_no_email: usize,
+    /// Email groups collapsed across a multi-person binding conflict (logged).
+    pub known_binding_conflicts: usize,
     pub observations_inserted: u64,
 }
 
@@ -116,6 +118,7 @@ where
         minted: outcome.minted,
         skipped_closed: outcome.skipped_closed,
         skipped_no_email: outcome.skipped_no_email,
+        known_binding_conflicts: outcome.known_binding_conflicts,
         observations_inserted,
     })
 }
