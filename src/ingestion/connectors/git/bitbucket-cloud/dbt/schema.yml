@@ -13,10 +13,23 @@ sources:
       - name: repositories
       - name: branches
       - name: commits
+      - name: commit_branch_reachability
       - name: file_changes
       - name: pull_requests
+      - name: pull_request_diffstat
+      - name: pull_request_activity
+      - name: pull_request_tasks
       - name: pull_request_comments
       - name: pull_request_commits
+      - name: pipelines
+      - name: pipeline_steps
+      - name: pipeline_step_test_reports
+      - name: deployments
+      - name: environments
+      - name: tags
+      - name: issues
+      - name: issue_comments
+      - name: issue_changes
 
 models:
   - name: bitbucket_cloud__repositories
@@ -27,6 +40,9 @@ models:
 
   - name: bitbucket_cloud__commits
     description: "Bitbucket Cloud commits -> staging, feeds class_git_commits"
+
+  - name: bitbucket_cloud__commit_branch_reachability
+    description: "Bitbucket Cloud commit-to-branch reachability events -> staging"
 
   - name: bitbucket_cloud__file_changes
     description: "Bitbucket Cloud file changes -> staging, feeds class_git_file_changes"

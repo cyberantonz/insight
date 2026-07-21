@@ -30,7 +30,7 @@
       "bitbucket_token": {
         "type": "string",
         "title": "API Token",
-        "description": "Bitbucket Cloud API token (personal or workspace access token). For personal tokens, also provide your username/email.",
+        "description": "Bitbucket Cloud API token with repository, pull request, issue, and pipeline read permissions. For personal tokens, also provide your username/email.",
         "airbyte_secret": true,
         "order": 3
       },
