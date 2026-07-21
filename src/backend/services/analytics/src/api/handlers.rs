@@ -304,6 +304,28 @@ async fn execute_metric_query(
                 None => (None, "<"),
             },
         };
+        // Guard against SQL injection: metric_date is interpolated (not bound)
+        // into the date-range clause below, unlike every other filter here. A
+        // payload such as `metric_date ge '2026-01-01\' UNION SELECT 1--'`
+        // survives extraction as `2026-01-01\` — the trailing backslash escapes
+        // the closing quote in ClickHouse, which quote-doubling does NOT
+        // neutralise. Accept only a strict YYYY-MM-DD value and reject anything
+        // else with a 400, mirroring the $orderby validator.
+        for v in [date_from.as_deref(), date_to.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if !is_valid_date(v) {
+                return Err(MetricError::invalid_argument()
+                    .with_resource(id.to_string())
+                    .with_field_violation(
+                        "$filter",
+                        format!("invalid metric_date value (expected YYYY-MM-DD): {v}"),
+                        "INVALID",
+                    )
+                    .create());
+            }
+        }
         if date_from.is_some() || date_to.is_some() {
             let mut clauses: Vec<String> = vec![];
             if let Some(ref v) = date_from {
@@ -935,6 +957,29 @@ fn is_valid_ident(s: &str) -> bool {
         && !s.ends_with('.')
 }
 
+/// Validate a `metric_date` filter value as a strict `YYYY-MM-DD` calendar date.
+///
+/// `metric_date` is the one filter interpolated into SQL rather than bound, so
+/// this guard is the injection boundary: it must reject anything that is not
+/// exactly ten chars of `dddd-dd-dd` (no quotes, backslashes, whitespace or SQL
+/// fragments). Month/day are range-checked as a sanity bound, not a full
+/// calendar (ClickHouse tolerates e.g. day 31 in a 30-day month, and
+/// `metric_date` is a `Date` column that rejects genuinely impossible values).
+fn is_valid_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let digits = |lo: usize, hi: usize| b[lo..hi].iter().all(u8::is_ascii_digit);
+    if !(digits(0, 4) && digits(5, 7) && digits(8, 10)) {
+        return false;
+    }
+    // Safe to parse: the ranges are verified ASCII digits above.
+    let month: u32 = s[5..7].parse().unwrap_or(0);
+    let day: u32 = s[8..10].parse().unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
 // ── Shared helpers ──────────────────────────────────────────
 
 /// Product/global tenant. Platform metric *definitions* are seeded once under
@@ -1444,6 +1489,54 @@ mod tests {
         assert!(!is_valid_ident(""));
         assert!(!is_valid_ident(".leading_dot"));
         assert!(!is_valid_ident("trailing_dot."));
+    }
+
+    // ── is_valid_date (metric_date $filter injection guard) ──
+
+    #[test]
+    fn date_valid() {
+        assert!(is_valid_date("2026-01-01"));
+        assert!(is_valid_date("2026-12-31"));
+        assert!(is_valid_date("1970-01-01"));
+    }
+
+    #[test]
+    fn date_rejects_wrong_shape() {
+        assert!(!is_valid_date(""));
+        assert!(!is_valid_date("2026-1-1")); // not zero-padded / wrong length
+        assert!(!is_valid_date("2026/01/01")); // wrong separator
+        assert!(!is_valid_date("2026-01-01 ")); // trailing space
+        assert!(!is_valid_date("2026-13-01")); // month out of range
+        assert!(!is_valid_date("2026-00-10")); // month zero
+        assert!(!is_valid_date("2026-01-32")); // day out of range
+        assert!(!is_valid_date("2026-01-00")); // day zero
+        assert!(!is_valid_date("202X-01-01")); // non-digit
+        assert!(!is_valid_date("2026-01-01T00:00:00")); // datetime, not a Date
+    }
+
+    #[test]
+    fn date_rejects_sql_injection() {
+        // Quote-doubling does NOT neutralise a trailing backslash; strict
+        // validation must.
+        assert!(!is_valid_date("2026-01-01\\")); // backslash escapes the closing quote in CH
+        assert!(!is_valid_date("2026-01-01' OR '1'='1"));
+        assert!(!is_valid_date("2026-01-01'; DROP TABLE metrics --"));
+        assert!(!is_valid_date("2026-01-01' UNION SELECT 1--"));
+    }
+
+    #[test]
+    fn date_rejects_injection_payload_after_odata_extraction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // End-to-end: the value that reaches the interpolation site is whatever
+        // extract_odata_value pulls out of the raw $filter. This is the exact
+        // vector from the issue — it stops at the first quote and yields
+        // `2026-01-01\`, which the guard must reject.
+        let filter = "metric_date ge '2026-01-01\\' UNION SELECT 1--'";
+        let extracted =
+            extract_odata_value(filter, "metric_date", "ge").ok_or("value is extracted")?;
+        assert_eq!(extracted, "2026-01-01\\");
+        assert!(!is_valid_date(&extracted));
+        Ok(())
     }
 
     // ── inject_date_filter_into_subqueries ──────────────────
