@@ -22,3 +22,6 @@ pub struct AccessError;
 
 #[resource_error("gts.cf.insight.identity_resolution.role.v1~")]
 pub struct RoleError;
+
+#[resource_error("gts.cf.insight.identity_resolution.person_role.v1~")]
+pub struct PersonRoleError;

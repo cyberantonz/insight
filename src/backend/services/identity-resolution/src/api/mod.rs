@@ -4,6 +4,7 @@ pub(crate) mod canonical_json;
 pub mod error;
 mod gate;
 mod handlers;
+pub mod person_roles;
 pub mod roles;
 pub mod seed;
 
@@ -50,6 +51,7 @@ pub fn register_routes(
 
 /// Declare each operation via the toolkit `OperationBuilder` (records the route
 /// + its OpenAPI spec + auth/error metadata).
+#[allow(clippy::too_many_lines)] // one flat block per route — readability over splitting
 fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post("/v1/profiles")
         .operation_id("identity_resolution.profiles.resolve")
@@ -153,7 +155,7 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(roles::list_roles)
         .register(router, openapi);
 
-    OperationBuilder::delete("/v1/roles/{id}")
+    let router = OperationBuilder::delete("/v1/roles/{id}")
         .operation_id("identity_resolution.roles.delete")
         .summary("Delete a role (admin)")
         .authenticated()
@@ -161,5 +163,45 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .no_content_response(StatusCode::NO_CONTENT, "Role deleted")
         .standard_errors(openapi)
         .handler(roles::delete_role)
+        .register(router, openapi);
+
+    // Person-roles junction (admin-gated grant / list / revoke assignments).
+    let router = OperationBuilder::post("/v1/person-roles")
+        .operation_id("identity_resolution.person_roles.create")
+        .summary("Grant a role to a person (admin)")
+        .authenticated()
+        .no_license_required()
+        .json_request::<person_roles::CreatePersonRoleRequest>(openapi, "Assignment to create")
+        .json_response_with_schema::<person_roles::PersonRoleResponse>(
+            openapi,
+            StatusCode::CREATED,
+            "Created assignment",
+        )
+        .standard_errors(openapi)
+        .handler(person_roles::create_person_role)
+        .register(router, openapi);
+
+    let router = OperationBuilder::get("/v1/person-roles")
+        .operation_id("identity_resolution.person_roles.list")
+        .summary("List role assignments (admin)")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<person_roles::PersonRoleListResponse>(
+            openapi,
+            StatusCode::OK,
+            "Assignments",
+        )
+        .standard_errors(openapi)
+        .handler(person_roles::list_person_roles)
+        .register(router, openapi);
+
+    OperationBuilder::delete("/v1/person-roles/{id}")
+        .operation_id("identity_resolution.person_roles.delete")
+        .summary("Revoke a role assignment (admin)")
+        .authenticated()
+        .no_license_required()
+        .no_content_response(StatusCode::NO_CONTENT, "Assignment revoked")
+        .standard_errors(openapi)
+        .handler(person_roles::delete_person_role)
         .register(router, openapi)
 }
