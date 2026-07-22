@@ -76,12 +76,9 @@ jobs:
           echo "dotnet=$(echo "$changed" | jq -c .dotnet)" >> "$GITHUB_OUTPUT"
           echo "python=$(echo "$changed" | jq -c .python)" >> "$GITHUB_OUTPUT"
 
-  # Assert exactly one jsonwebtoken crypto provider is active in the unified
-  # backend build. Cheap (no compile — `cargo tree` only reads the resolved
-  # graph) guard against the aws_lc_rs + rust_crypto feature-unification trap
-  # that panics on every JWT verify (#1725). See #1727. Runs on every PR that
-  # reaches this workflow — a provider flip can come from any dependency bump,
-  # not just a changed backend crate.
+  # Guard the jsonwebtoken crypto-provider invariant: >1 backend active makes
+  # verify() panic on every call (#1725, #1727). cargo tree only reads the
+  # resolved graph — no compile.
   jwt-provider-guard:
     name: JWT crypto-provider invariant
     runs-on: ubuntu-latest
@@ -89,13 +86,21 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.95.0"
-
-      - name: Exactly one jsonwebtoken provider
-        run: ./scripts/ci/check_jwt_provider.sh
+      - name: Exactly one jsonwebtoken crypto provider
+        run: |
+          # Providers = jsonwebtoken's enabled features minus the known
+          # non-crypto ones, so an unknown future backend still counts (fail-safe).
+          providers=$(cargo tree --manifest-path src/backend/Cargo.toml --edges features --invert jsonwebtoken \
+            | grep -oE 'jsonwebtoken feature "[^"]+"' | sed -E 's/.*"([^"]+)".*/\1/' \
+            | tr '-' '_' | sort -u | grep -vxE 'default|use_pem|pem|simple_asn1')
+          n=$(printf '%s' "$providers" | grep -c .)
+          if [ "$n" -ne 1 ]; then
+            echo "Expected exactly one jsonwebtoken crypto provider, found $n: $(echo $providers)"
+            exit 1
+          fi
 
   # One unified job per Rust crate: fmt + clippy (when entry.lint) and coverage
   # (when entry.cover). Replaces the old standalone workspace rust-lint — fmt and
