@@ -165,6 +165,9 @@ pub async fn insert(
 /// tenant's last active `admin` assignment (lockout guard). Returns rows
 /// affected: 1 = revoked, 0 = already revoked / vanished / would-be-last-admin.
 /// Ported verbatim from `SqlRoles.TrySoftDeletePersonRoleProtectingLastAdmin`.
+/// The `UPDATE … JOIN (…count…)` guard is atomic conditional DML with a
+/// correlated subquery — no `toolkit-db` builder form → raw SQL (see
+/// `infra::db` module docs + constructorfabric/gears-rust#4239).
 ///
 /// # Errors
 ///

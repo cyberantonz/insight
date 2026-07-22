@@ -139,6 +139,8 @@ pub async fn insert_role(db: &DatabaseConnection, role_id: Uuid, name: &str) -> 
 /// Hard-delete a role only if no ACTIVE `person_roles` reference it (single
 /// atomic statement — the in-use guard). Returns rows affected: 1 = deleted,
 /// 0 = missing or in use. Ported verbatim from `SqlRoles.TryDeleteRoleIfUnused`.
+/// The correlated `NOT EXISTS` guard has no `toolkit-db` builder form → raw SQL
+/// (see `infra::db` module docs + constructorfabric/gears-rust#4239).
 ///
 /// # Errors
 ///
