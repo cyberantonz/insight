@@ -133,4 +133,4 @@ cases:
       - metric: tasks.closed
         view: timeseries
         find: { entity_id: alice@example.com }
-        contains: { points: { bucket_start: "2026-12-24", value: 0 } }
+        contains: { points: { bucket_start: "2026-12-24", value: null } }

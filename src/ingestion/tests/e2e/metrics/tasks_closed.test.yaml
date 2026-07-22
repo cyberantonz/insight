@@ -303,4 +303,4 @@ cases:
         metrics: [{ metric_key: tasks.closed, views: [{ view: period }] }]
     expect:
       - assert: "status == 200"
-      - { metric: tasks.closed, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: tasks.closed, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

@@ -186,9 +186,9 @@ cases:
           - { metric_key: collab.focus_time_pct, views: [{ view: period }] }
     expect:
       - assert: "status == 200"
-      - { metric: collab.meeting_hours, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
-      - { metric: collab.meetings_count, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
-      - { metric: collab.meetings_organized, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
-      - { metric: collab.adhoc_meetings, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
-      - { metric: collab.scheduled_meetings, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: collab.meeting_hours, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
+      - { metric: collab.meetings_count, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
+      - { metric: collab.meetings_organized, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
+      - { metric: collab.adhoc_meetings, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
+      - { metric: collab.scheduled_meetings, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
       - { metric: collab.focus_time_pct, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

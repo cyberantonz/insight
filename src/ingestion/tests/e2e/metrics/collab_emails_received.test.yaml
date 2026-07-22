@@ -72,4 +72,4 @@ cases:
         metrics: [{ metric_key: collab.emails_received, views: [{ view: period }] }]
     expect:
       - assert: "status == 200"
-      - { metric: collab.emails_received, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: collab.emails_received, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

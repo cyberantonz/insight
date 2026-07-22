@@ -391,5 +391,5 @@ cases:
           - { metric_key: tasks.bugs_ratio, views: [{ view: period }] }
     expect:
       - assert: "status == 200"
-      - { metric: tasks.bugs_fixed, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: tasks.bugs_fixed, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
       - { metric: tasks.bugs_ratio, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

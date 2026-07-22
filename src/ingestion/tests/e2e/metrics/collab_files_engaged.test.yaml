@@ -77,4 +77,4 @@ cases:
         metrics: [{ metric_key: collab.files_engaged, views: [{ view: period }] }]
     expect:
       - assert: "status == 200"
-      - { metric: collab.files_engaged, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: collab.files_engaged, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

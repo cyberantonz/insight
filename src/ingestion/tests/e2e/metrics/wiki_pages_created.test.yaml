@@ -75,4 +75,4 @@ cases:
         metrics: [{ metric_key: wiki.pages_created, views: [{ view: period }] }]
     expect:
       - assert: "status == 200"
-      - { metric: wiki.pages_created, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: wiki.pages_created, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

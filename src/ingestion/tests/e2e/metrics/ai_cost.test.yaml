@@ -101,4 +101,4 @@ cases:
       - metric: ai.cost
         view: period
         find: { entity_id: erin@example.com }
-        equal: { value: 0 }
+        equal: { value: null }

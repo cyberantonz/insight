@@ -54,7 +54,7 @@ cases:
       - metric: collab.channel_posts
         view: period
         find: { entity_id: erin@example.com }
-        equal: { value: 0 }
+        equal: { value: null }
       - metric: collab.channel_posts
         view: peer
         find: { entity_id: erin@example.com }

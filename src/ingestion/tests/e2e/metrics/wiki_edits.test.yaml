@@ -78,5 +78,5 @@ cases:
           - { metric_key: wiki.pages_edited, views: [{ view: period }] }
     expect:
       - assert: "status == 200"
-      - { metric: wiki.edits, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
-      - { metric: wiki.pages_edited, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: wiki.edits, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
+      - { metric: wiki.pages_edited, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

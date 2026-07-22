@@ -98,5 +98,5 @@ cases:
           - { metric_key: collab.files_shared, views: [{ view: period }] }
     expect:
       - assert: "status == 200"
-      - { metric: collab.files_shared_internal, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
-      - { metric: collab.files_shared, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: collab.files_shared_internal, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
+      - { metric: collab.files_shared, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }

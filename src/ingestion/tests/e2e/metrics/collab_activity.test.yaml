@@ -109,5 +109,5 @@ cases:
           - { metric_key: collab.breadth, views: [{ view: period }] }
     expect:
       - assert: "status == 200"
-      - { metric: collab.active_days, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
-      - { metric: collab.breadth, view: period, find: { entity_id: erin@example.com }, equal: { value: 0 } }
+      - { metric: collab.active_days, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
+      - { metric: collab.breadth, view: period, find: { entity_id: erin@example.com }, equal: { value: null } }
