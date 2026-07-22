@@ -79,6 +79,25 @@ def test_activity_snapshot_uses_provider_event_timestamp(stream_args, client, re
     assert records[-1]["snapshot_item_count"] == 1
 
 
+def test_activity_classifies_every_event_type(stream_args, client, repo):
+    stream = PRActivityStream(**stream_args)
+    path = client.repo_path(repo, "pullrequests/42/activity")
+    client.optional_values[path] = (
+        True,
+        [
+            {"approval": {"date": "2026-06-30T03:00:00+00:00", "user": {"uuid": "u1"}}},
+            {"comment": {"created_on": "2026-06-30T04:00:00+00:00", "user": {"uuid": "u2"}}},
+            {"user": {"uuid": "u3"}},
+        ],
+    )
+    records = list(stream.pull_request_records(repo, pr()))
+    events = {record["event_type"]: record for record in records if record["record_type"] == "item"}
+    assert set(events) == {"approval", "comment", "unknown"}
+    assert events["approval"]["activity_date"] == "2026-06-30T03:00:00+00:00"
+    assert events["comment"]["activity_date"] == "2026-06-30T04:00:00+00:00"
+    assert records[-1]["snapshot_item_count"] == 3
+
+
 def test_pipeline_cursor_uses_observed_provider_time(stream_args, client, repo):
     stream = PipelinesStream(**stream_args)
     path = client.repo_path(repo, "pipelines")

@@ -47,6 +47,14 @@ class FakeCatalog:
         return self._client.branches(repo) if self._client else []
 
 
+class _FakeResponse:
+    def __init__(self, body: Mapping[str, Any]):
+        self._body = body
+
+    def json(self) -> Mapping[str, Any]:
+        return self._body
+
+
 class FakeClient:
     def __init__(self):
         self.branch_values: dict[str, list[BranchRef]] = {}
@@ -55,9 +63,16 @@ class FakeClient:
         self.optional_values: dict[str, tuple[bool, list[Mapping[str, Any]]]] = {}
         self.pr_values: list[Mapping[str, Any]] = []
         self.commit_calls: list[tuple[list[str], list[str]]] = []
+        self.request_values: dict[str, Mapping[str, Any] | None] = {}
 
     def branches(self, repo: RepositoryRef) -> list[BranchRef]:
         return self.branch_values.get(repo.uuid, [])
+
+    def request(self, method, path, **kwargs):
+        body = self.request_values.get(path)
+        if body is None:
+            return None
+        return _FakeResponse(body)
 
     def commits_between(self, repo, include, exclude):
         self.commit_calls.append((list(include), list(exclude)))
