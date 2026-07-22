@@ -11,8 +11,8 @@ use super::compiler::{
 };
 use super::dto::{
     BreakdownValueDto, ComputationDto, HistogramBinDto, HistogramValueDto, MetricDimensionDto,
-    MetricResultDto, MetricResultViewDto, MetricResultsResponse, PeerValueDto, PeriodValueDto,
-    TimeseriesDto, TimeseriesPointDto,
+    MetricResultDto, MetricResultViewDto, PeerValueDto, PeriodValueDto, TimeseriesDto,
+    TimeseriesPointDto,
 };
 use super::validation::{
     HISTOGRAM_BINS, ValidatedMetricResultsRequest, enumerate_buckets, metric_result_too_large,
@@ -285,30 +285,28 @@ pub fn build_metric_result(
     }
 }
 
-pub fn enforce_row_limit(response: &MetricResultsResponse) -> Result<(), CanonicalError> {
-    if response_size(response) > row_limit() {
-        return Err(metric_result_too_large());
+pub fn enforce_view_row_limit(
+    view: &MetricResultViewDto,
+    field: impl Into<String>,
+) -> Result<(), CanonicalError> {
+    if view_size(view) > row_limit() {
+        return Err(metric_result_too_large(field));
     }
     Ok(())
 }
 
-fn response_size(response: &MetricResultsResponse) -> usize {
-    response
-        .metrics
-        .iter()
-        .flat_map(|metric| &metric.views)
-        .map(|view| match view {
-            MetricResultViewDto::Period { values } => values.len(),
-            MetricResultViewDto::Timeseries { series, .. } => {
-                series.iter().map(|s| s.points.len() + 1).sum()
-            }
-            MetricResultViewDto::Peer { values } => values.len(),
-            MetricResultViewDto::Breakdown { values, .. } => values.len(),
-            MetricResultViewDto::Histogram { values } => {
-                values.iter().map(|value| value.bins.len()).sum()
-            }
-        })
-        .sum()
+fn view_size(view: &MetricResultViewDto) -> usize {
+    match view {
+        MetricResultViewDto::Period { values } => values.len(),
+        MetricResultViewDto::Timeseries { series, .. } => {
+            series.iter().map(|series| series.points.len() + 1).sum()
+        }
+        MetricResultViewDto::Peer { values } => values.len(),
+        MetricResultViewDto::Breakdown { values, .. } => values.len(),
+        MetricResultViewDto::Histogram { values } => {
+            values.iter().map(|value| value.bins.len()).sum()
+        }
+    }
 }
 
 fn row_dimensions(
@@ -798,43 +796,32 @@ mod tests {
     }
 
     #[test]
-    fn response_size_counts_histogram_bins() {
+    fn view_size_counts_histogram_bins() {
         let req = request(vec!["a@x.io"], "2026-01-01", "2026-01-31");
         let view = build_histogram_view(&req, vec![histogram_row("a@x.io", 2, 0.0, 10.0, 1)]);
-        let response = MetricResultsResponse {
-            metrics: vec![build_metric_result(&median_metric(), vec![view])],
-        };
-        assert_eq!(response_size(&response), 10);
+        assert_eq!(view_size(&view), 10);
     }
 
     #[test]
-    fn response_size_counts_densified_points() {
+    fn view_size_counts_densified_points() {
         let req = request(vec!["a@x.io"], "2026-01-01", "2026-01-10");
         let Ok(view) = build_timeseries_view(&sum_metric(), &req, Bucket::Day, &[], Vec::new())
         else {
             panic!("expected timeseries view");
         };
-        let response = MetricResultsResponse {
-            metrics: vec![build_metric_result(&sum_metric(), vec![view])],
-        };
-        assert_eq!(response_size(&response), 11);
+        assert_eq!(view_size(&view), 11);
     }
 
     #[test]
-    fn final_response_limit_rejects_cardinality_dependent_results() {
+    fn view_limit_rejects_cardinality_dependent_results() {
         let values = (0..=row_limit())
             .map(|index| PeriodValueDto {
                 entity_id: format!("p{index}@x.io"),
                 value: Some(1.0),
             })
             .collect();
-        let response = MetricResultsResponse {
-            metrics: vec![build_metric_result(
-                &sum_metric(),
-                vec![MetricResultViewDto::Period { values }],
-            )],
-        };
-        assert!(enforce_row_limit(&response).is_err());
+        let view = MetricResultViewDto::Period { values };
+        assert!(enforce_view_row_limit(&view, "metrics[0].views[0]").is_err());
     }
 
     #[test]

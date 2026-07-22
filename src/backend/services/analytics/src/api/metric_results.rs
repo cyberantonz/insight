@@ -16,7 +16,7 @@ use crate::domain::metric_results::{
     RankingQueryRow, TimeseriesQueryRow, UnbatchedView, ValidatedMetricResultsRequest,
     build_breakdown_view, build_histogram_view, build_metric_result, build_peer_view,
     build_period_view, build_ranked_groups, build_timeseries_view, demux_peer_rows,
-    demux_period_rows, enforce_row_limit, plan_queries, plan_rankings, validate_request,
+    demux_period_rows, enforce_view_row_limit, plan_queries, plan_rankings, validate_request,
 };
 use toolkit_security::SecurityContext;
 
@@ -71,17 +71,17 @@ pub async fn query_metric_results(
     let mut metrics = Vec::with_capacity(req.metrics.len());
     for (idx, metric) in req.metrics.iter().enumerate() {
         let mut views = Vec::with_capacity(metric.views.len());
-        for view in views_by_metric[idx].drain(..) {
+        for (view_index, view) in views_by_metric[idx].drain(..).enumerate() {
             let Some(view) = view else {
                 return Err(CanonicalError::internal("missing metric view result").create());
             };
+            enforce_view_row_limit(&view, format!("metrics[{idx}].views[{view_index}]"))?;
             views.push(view);
         }
         metrics.push(build_metric_result(&metric.def, views));
     }
 
     let response = MetricResultsResponse { metrics };
-    enforce_row_limit(&response)?;
     Ok(Json(response))
 }
 

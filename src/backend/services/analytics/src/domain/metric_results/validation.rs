@@ -177,7 +177,7 @@ pub async fn validate_request(
         to,
         metrics,
     };
-    validate_projected_row_limit(&validated)?;
+    validate_projected_view_limits(&validated)?;
     Ok(validated)
 }
 
@@ -241,18 +241,15 @@ pub const fn row_limit() -> usize {
     ROW_LIMIT
 }
 
-// One past the response cap: a query returning ROW_LIMIT + 1 rows proves
-// truncation, which the final enforce_row_limit pass then converts into a
-// whole-request failure instead of a silently clipped result.
 pub const fn query_row_limit() -> usize {
     ROW_LIMIT + 1
 }
 
-pub fn metric_result_too_large() -> CanonicalError {
+pub fn metric_result_too_large(field: impl Into<String>) -> CanonicalError {
     MetricError::invalid_argument()
         .with_field_violation(
-            "metric_results",
-            "Requested metric result exceeds the row limit. Reduce the date range, entities, metrics, or dimensions.",
+            field,
+            "Requested metric view exceeds the row limit. Reduce the date range, entities, or dimensions.",
             "metric_result_too_large",
         )
         .create()
@@ -564,14 +561,14 @@ fn normalize_metric_key(field: &'static str, value: &str) -> Result<String, Cano
     Ok(value)
 }
 
-fn validate_projected_row_limit(req: &ValidatedMetricResultsRequest) -> Result<(), CanonicalError> {
-    let mut projected = 0usize;
-
-    for metric in &req.metrics {
-        for view in &metric.views {
-            match view {
+fn validate_projected_view_limits(
+    req: &ValidatedMetricResultsRequest,
+) -> Result<(), CanonicalError> {
+    for (metric_index, metric) in req.metrics.iter().enumerate() {
+        for (view_index, view) in metric.views.iter().enumerate() {
+            let projected = match view {
                 ValidatedMetricView::Period | ValidatedMetricView::Peer { .. } => {
-                    projected = projected.saturating_add(req.entity_ids.len());
+                    req.entity_ids.len()
                 }
                 ValidatedMetricView::Timeseries {
                     bucket,
@@ -581,24 +578,22 @@ fn validate_projected_row_limit(req: &ValidatedMetricResultsRequest) -> Result<(
                     let groups = group_limit.as_ref().map_or(1, |limit| {
                         limit.count + usize::from(limit.include_remainder)
                     });
-                    projected = projected.saturating_add(
-                        req.entity_ids
-                            .len()
-                            .saturating_mul(groups)
-                            .saturating_mul(enumerate_buckets(req.from, req.to, *bucket).len() + 1),
-                    );
+                    req.entity_ids
+                        .len()
+                        .saturating_mul(groups)
+                        .saturating_mul(enumerate_buckets(req.from, req.to, *bucket).len() + 1)
                 }
                 ValidatedMetricView::Histogram => {
-                    projected = projected
-                        .saturating_add(req.entity_ids.len().saturating_mul(HISTOGRAM_BINS));
+                    req.entity_ids.len().saturating_mul(HISTOGRAM_BINS)
                 }
-                ValidatedMetricView::Breakdown { .. } => {}
+                ValidatedMetricView::Breakdown { .. } => 0,
+            };
+            if projected > ROW_LIMIT {
+                return Err(metric_result_too_large(format!(
+                    "metrics[{metric_index}].views[{view_index}]"
+                )));
             }
         }
-    }
-
-    if projected > ROW_LIMIT {
-        return Err(metric_result_too_large());
     }
     Ok(())
 }
@@ -1120,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_row_limit_counts_timeseries_buckets() {
+    fn projected_view_limit_counts_timeseries_buckets() {
         let def = sum_definition(vec![]);
         let validated = ValidatedMetricResultsRequest {
             entity_type: "person".to_owned(),
@@ -1137,11 +1132,11 @@ mod tests {
                 }],
             }],
         };
-        assert!(validate_projected_row_limit(&validated).is_err());
+        assert!(validate_projected_view_limits(&validated).is_err());
     }
 
     #[test]
-    fn projected_row_limit_uses_the_capped_group_count_and_totals() {
+    fn projected_view_limit_uses_the_capped_group_count_and_totals() {
         let def = sum_definition(vec!["repository"]);
         let view = || ValidatedMetricView::Timeseries {
             bucket: Bucket::Week,
@@ -1165,19 +1160,22 @@ mod tests {
                 })
                 .collect(),
         };
-        assert!(validate_projected_row_limit(&validated).is_ok());
+        assert!(validate_projected_view_limits(&validated).is_ok());
 
-        let mut oversized = validated;
-        oversized.entity_ids = vec![
+        let mut combined_over_limit = validated;
+        combined_over_limit.entity_ids = vec![
             "a@x.io".to_owned(),
             "b@x.io".to_owned(),
             "c@x.io".to_owned(),
         ];
-        assert!(validate_projected_row_limit(&oversized).is_err());
+        assert!(validate_projected_view_limits(&combined_over_limit).is_ok());
+
+        combined_over_limit.entity_ids = (0..10).map(|i| format!("p{i}@x.io")).collect();
+        assert!(validate_projected_view_limits(&combined_over_limit).is_err());
     }
 
     #[test]
-    fn projected_row_limit_counts_histogram_bins() {
+    fn projected_view_limit_counts_histogram_bins() {
         // 501 entities × 10 bins > 5000 projected rows.
         let validated = ValidatedMetricResultsRequest {
             entity_type: "person".to_owned(),
@@ -1190,11 +1188,11 @@ mod tests {
                 views: vec![ValidatedMetricView::Histogram],
             }],
         };
-        assert!(validate_projected_row_limit(&validated).is_err());
+        assert!(validate_projected_view_limits(&validated).is_err());
     }
 
     #[test]
-    fn projected_row_limit_allows_small_requests() {
+    fn projected_view_limit_allows_small_requests() {
         let def = sum_definition(vec![]);
         let validated = ValidatedMetricResultsRequest {
             entity_type: "person".to_owned(),
@@ -1212,6 +1210,6 @@ mod tests {
                 ],
             }],
         };
-        assert!(validate_projected_row_limit(&validated).is_ok());
+        assert!(validate_projected_view_limits(&validated).is_ok());
     }
 }

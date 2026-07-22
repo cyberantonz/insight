@@ -11,7 +11,7 @@ pub use batch::{
 };
 pub use builder::{
     build_breakdown_view, build_histogram_view, build_metric_result, build_peer_view,
-    build_period_view, build_ranked_groups, build_timeseries_view, enforce_row_limit,
+    build_period_view, build_ranked_groups, build_timeseries_view, enforce_view_row_limit,
 };
 pub use compiler::{
     BreakdownQueryRow, CompiledQuery, HistogramQueryRow, RankingQueryRow, TimeseriesQueryRow,
