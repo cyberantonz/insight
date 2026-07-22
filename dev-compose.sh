@@ -520,6 +520,10 @@ YML
   # ── Build phase ──────────────────────────────────────────────────
   if [[ "$skip_build" != "true" ]]; then
     echo "=== Building artefacts (skip with --skip-build) ==="
+    if [[ "$AUTH_MODE" == fakeidp ]]; then
+      echo "--- Image: fakeidp"
+      "${compose_cmd[@]}" --profile auth-fakeidp build fakeidp
+    fi
     # authenticator is always built from source (no ghcr flip for it) and its
     # binary is bind-mounted as a file — omit it and compose auto-creates the
     # mount source as an empty directory, failing container init.
