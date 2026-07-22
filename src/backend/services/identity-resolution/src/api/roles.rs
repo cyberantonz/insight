@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Extension, Path};
-use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::LOCATION;
 use axum::response::IntoResponse;
@@ -66,11 +65,9 @@ impl toolkit::api::api_dto::ResponseApiDto for RoleListResponse {}
 pub async fn create_role(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     CanonicalJson(req): CanonicalJson<CreateRoleRequest>,
 ) -> Result<impl IntoResponse, CanonicalError> {
-    let tenant = ctx.subject_tenant_id();
-    let author = require_admin(&state.db, &headers, tenant).await?;
+    let author = require_admin(&state.db, &ctx).await?;
 
     let name = req.name;
     if !role_name_valid(&name) {
@@ -115,10 +112,8 @@ pub async fn create_role(
 pub async fn list_roles(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse, CanonicalError> {
-    let tenant = ctx.subject_tenant_id();
-    require_admin(&state.db, &headers, tenant).await?;
+    require_admin(&state.db, &ctx).await?;
 
     let roles = roles_repo::list_all(&state.db).await.map_err(read_err)?;
     let items = roles.into_iter().map(RoleResponse::from).collect();
@@ -133,11 +128,9 @@ pub async fn list_roles(
 pub async fn delete_role(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, CanonicalError> {
-    let tenant = ctx.subject_tenant_id();
-    let author = require_admin(&state.db, &headers, tenant).await?;
+    let author = require_admin(&state.db, &ctx).await?;
 
     let existing = roles_repo::get_by_id(&state.db, id)
         .await

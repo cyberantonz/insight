@@ -6,18 +6,18 @@
 //! completed/failed. The GETs poll status. Ported from the .NET
 //! `PersonsSeedEndpoints` + `PersonsSeedQueue`.
 //!
-//! Admin-gated like the .NET `CallerAdminCheck`: the caller is resolved from the
-//! `X-Insight-Person-Id` header and must hold an active `admin` role in the
-//! tenant, and is recorded as the seed author. The .NET JWT id/email-claim
-//! fallbacks are deferred until gears auth carries a subject.
+//! Admin-gated like the .NET `CallerAdminCheck`: the caller is the gateway-JWT
+//! subject (`SecurityContext::subject_id`, verified by the host authn pipeline —
+//! `NGINX_BFF` R1) and must hold an active `admin` role in the tenant; it is
+//! recorded as the seed author.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Extension, Path, Query};
+use axum::http::StatusCode;
 use axum::http::header::LOCATION;
-use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
@@ -168,14 +168,13 @@ pub struct ListParams {
 pub async fn create_persons_seed(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     CanonicalJson(req): CanonicalJson<PersonsSeedRequest>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
     // Admin gate first (parity with .NET: the caller/admin check precedes mode
     // validation, so an unauthenticated/non-admin caller gets 401/403, not 400).
     // The resolved caller is recorded as the author of the job + observations.
-    let author = require_admin(&state.db, &headers, tenant).await?;
+    let author = require_admin(&state.db, &ctx).await?;
 
     let mode = req
         .mode
@@ -250,12 +249,11 @@ pub async fn create_persons_seed(
 pub async fn get_persons_seed(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
     // Same admin gate as POST (parity — the .NET service gates all three routes).
-    require_admin(&state.db, &headers, tenant).await?;
+    require_admin(&state.db, &ctx).await?;
     let op = ops_repo::get_by_id(&state.db, tenant, id)
         .await
         .map_err(|e| {
@@ -276,12 +274,11 @@ pub async fn get_persons_seed(
 pub async fn list_persons_seed(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
     // Same admin gate as POST (parity — the .NET service gates all three routes).
-    require_admin(&state.db, &headers, tenant).await?;
+    require_admin(&state.db, &ctx).await?;
     let status = status_filter(params.status.as_deref());
     let limit = params
         .limit

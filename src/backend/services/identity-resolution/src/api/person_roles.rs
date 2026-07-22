@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Extension, Path, Query};
-use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::LOCATION;
 use axum::response::IntoResponse;
@@ -101,11 +100,10 @@ pub struct ListParams {
 pub async fn create_person_role(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     CanonicalJson(req): CanonicalJson<CreatePersonRoleRequest>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    let author = require_admin(&state.db, &headers, tenant).await?;
+    let author = require_admin(&state.db, &ctx).await?;
 
     if !ids_present(req.person_id, req.role_id) {
         return Err(PersonRoleError::invalid_argument()
@@ -150,11 +148,10 @@ pub async fn create_person_role(
 pub async fn list_person_roles(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    require_admin(&state.db, &headers, tenant).await?;
+    require_admin(&state.db, &ctx).await?;
 
     let limit = params
         .limit
@@ -182,12 +179,11 @@ pub async fn list_person_roles(
 pub async fn delete_person_role(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     Path(id): Path<Uuid>,
     body: Option<Json<RevokeReasonRequest>>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    let author = require_admin(&state.db, &headers, tenant).await?;
+    let author = require_admin(&state.db, &ctx).await?;
     let reason = body.and_then(|Json(b)| b.reason);
 
     // Pre-fetch for audit + initial 404. A revoked row (valid_to set) is 404.

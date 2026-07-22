@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Extension, Path, Query};
-use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::LOCATION;
 use axum::response::IntoResponse;
@@ -101,11 +100,10 @@ pub struct ListParams {
 pub async fn create_visibility(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     CanonicalJson(req): CanonicalJson<CreateVisibilityRequest>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    let author = require_admin(&state.db, &headers, tenant).await?;
+    let author = require_admin(&state.db, &ctx).await?;
 
     if req.viewer_person_id.is_nil() {
         return Err(VisibilityError::invalid_argument()
@@ -158,11 +156,10 @@ pub async fn create_visibility(
 pub async fn list_visibility(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    require_admin(&state.db, &headers, tenant).await?;
+    require_admin(&state.db, &ctx).await?;
 
     let limit = params
         .limit
@@ -189,12 +186,11 @@ pub async fn list_visibility(
 pub async fn delete_visibility(
     Extension(state): Extension<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-    headers: HeaderMap,
     Path(id): Path<Uuid>,
     body: Option<Json<RevokeReasonRequest>>,
 ) -> Result<impl IntoResponse, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    let author = require_admin(&state.db, &headers, tenant).await?;
+    let author = require_admin(&state.db, &ctx).await?;
     let reason = body.and_then(|Json(b)| b.reason);
 
     // 404 only if the grant never existed; otherwise soft-delete + 204 (a
