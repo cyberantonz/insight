@@ -7,7 +7,9 @@
     engine='ReplacingMergeTree(_version)',
     order_by=['unique_key'],
     settings={'allow_nullable_key': 1},
-    tags=['jira', 'silver:class_task_field_metadata']
+    -- 'staging' required: jira-enrich reads this and the staging phase selects
+    -- `tag:staging,tag:jira` (intersection); without it enrich aborts (#1743).
+    tags=['staging', 'jira', 'silver:class_task_field_metadata']
 ) }}
 
 -- Jira field metadata → `staging.jira__task_field_metadata` → unioned into
