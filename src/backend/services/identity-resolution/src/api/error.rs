@@ -25,3 +25,6 @@ pub struct PersonRoleError;
 
 #[resource_error("gts.cf.insight.identity_resolution.visibility.v1~")]
 pub struct VisibilityError;
+
+#[resource_error("gts.cf.insight.identity_resolution.subchart.v1~")]
+pub struct SubchartError;

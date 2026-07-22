@@ -13,6 +13,23 @@ use uuid::Uuid;
 use crate::api::error::AccessError;
 use crate::infra::db::roles_repo;
 
+/// Require an identified caller (gateway-JWT subject). Returns the caller
+/// `person_id`, or 401 when the JWT carries no person subject. The baseline gate
+/// for authenticated-but-not-admin endpoints (e.g. subchart).
+///
+/// # Errors
+///
+/// 401 if the JWT carries no person subject.
+pub(crate) fn require_caller(ctx: &SecurityContext) -> Result<Uuid, CanonicalError> {
+    let caller = ctx.subject_id();
+    if caller.is_nil() {
+        return Err(CanonicalError::unauthenticated()
+            .with_reason("caller not identified: the gateway JWT carries no person subject")
+            .create());
+    }
+    Ok(caller)
+}
+
 /// Resolve the caller (gateway-JWT subject) and require an active `admin` role
 /// in the tenant. Returns the caller `person_id`, or 401 (no subject) / 403
 /// (not admin).
@@ -25,12 +42,7 @@ pub(crate) async fn require_admin(
     db: &DatabaseConnection,
     ctx: &SecurityContext,
 ) -> Result<Uuid, CanonicalError> {
-    let caller = ctx.subject_id();
-    if caller.is_nil() {
-        return Err(CanonicalError::unauthenticated()
-            .with_reason("caller not identified: the gateway JWT carries no person subject")
-            .create());
-    }
+    let caller = require_caller(ctx)?;
     let is_admin = roles_repo::has_active_admin(db, ctx.subject_tenant_id(), caller)
         .await
         .map_err(|e| {

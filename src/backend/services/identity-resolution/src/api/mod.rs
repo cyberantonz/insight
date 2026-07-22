@@ -7,6 +7,7 @@ mod handlers;
 pub mod person_roles;
 pub mod roles;
 pub mod seed;
+pub mod subchart;
 pub mod visibility;
 
 use std::sync::Arc;
@@ -230,7 +231,7 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(visibility::list_visibility)
         .register(router, openapi);
 
-    OperationBuilder::delete("/v1/visibility/{id}")
+    let router = OperationBuilder::delete("/v1/visibility/{id}")
         .operation_id("identity_resolution.visibility.delete")
         .summary("Revoke a visibility grant (admin)")
         .authenticated()
@@ -238,5 +239,34 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .no_content_response(StatusCode::NO_CONTENT, "Grant revoked")
         .standard_errors(openapi)
         .handler(visibility::delete_visibility)
+        .register(router, openapi);
+
+    // Org subchart (authenticated; visibility shapes what each caller sees).
+    let router = OperationBuilder::get("/v1/subchart")
+        .operation_id("identity_resolution.subchart.forest")
+        .summary("Org forest the caller can see")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<subchart::SubchartForestResponse>(
+            openapi,
+            StatusCode::OK,
+            "Visible forest",
+        )
+        .standard_errors(openapi)
+        .handler(subchart::get_forest)
+        .register(router, openapi);
+
+    OperationBuilder::get("/v1/subchart/{person_id}")
+        .operation_id("identity_resolution.subchart.get")
+        .summary("Depth-bounded org subtree rooted at a person")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<subchart::SubchartResponse>(
+            openapi,
+            StatusCode::OK,
+            "Subchart",
+        )
+        .standard_errors(openapi)
+        .handler(subchart::get_subchart)
         .register(router, openapi)
 }
