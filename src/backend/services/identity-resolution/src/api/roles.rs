@@ -89,20 +89,24 @@ pub async fn create_role(
         .map_err(read_err)?
         .is_some()
     {
-        return Err(
-            RoleError::already_exists(format!("role name '{name}' already exists"))
-                .with_resource(name)
-                .create(),
-        );
+        return Err(already_exists(&name));
     }
 
     let role_id = Uuid::now_v7();
-    roles_repo::insert_role(&state.db, role_id, &name)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "insert role failed");
-            CanonicalError::internal("failed to create role").create()
-        })?;
+    if let Err(e) = roles_repo::insert_role(&state.db, role_id, &name).await {
+        // Lost the UNIQUE(name) race with a concurrent create between the
+        // pre-check and here → 409, not an opaque 500. Re-read to confirm it was
+        // a duplicate rather than a real failure.
+        if roles_repo::get_by_name(&state.db, &name)
+            .await
+            .map_err(read_err)?
+            .is_some()
+        {
+            return Err(already_exists(&name));
+        }
+        tracing::error!(error = %e, "insert role failed");
+        return Err(CanonicalError::internal("failed to create role").create());
+    }
     tracing::info!(%role_id, %name, author_person_id = %author, "roles.create");
 
     let location = format!("/v1/roles/{role_id}");
@@ -171,6 +175,12 @@ pub async fn delete_role(
 fn not_found(id: Uuid) -> CanonicalError {
     RoleError::not_found("role not found")
         .with_resource(id.to_string())
+        .create()
+}
+
+fn already_exists(name: &str) -> CanonicalError {
+    RoleError::already_exists(format!("role name '{name}' already exists"))
+        .with_resource(name.to_owned())
         .create()
 }
 

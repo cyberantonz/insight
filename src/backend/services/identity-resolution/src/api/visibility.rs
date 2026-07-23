@@ -35,7 +35,9 @@ pub struct CreateVisibilityRequest {
     pub viewer_person_id: Uuid,
     #[serde(default)]
     pub viewed_person_id: Option<Uuid>,
-    #[serde(default)]
+    /// Optional grant start; defaults to now when omitted. Accepts RFC-3339
+    /// (`Z`/offset), zone-less, or date-only, normalised to naive-UTC.
+    #[serde(default, deserialize_with = "super::datetime::deserialize_opt")]
     pub valid_from: Option<DateTime>,
     #[serde(default)]
     pub reason: Option<String>,

@@ -1,6 +1,7 @@
 //! HTTP API layer — shared state, route table, extractors.
 
 pub(crate) mod canonical_json;
+pub(crate) mod datetime;
 pub mod error;
 mod gate;
 mod handlers;

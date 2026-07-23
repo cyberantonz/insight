@@ -35,8 +35,9 @@ const MAX_REASON_LEN: usize = 500; // VARCHAR(500)
 pub struct CreatePersonRoleRequest {
     pub person_id: Uuid,
     pub role_id: Uuid,
-    /// Optional assignment start; defaults to now when omitted.
-    #[serde(default)]
+    /// Optional assignment start; defaults to now when omitted. Accepts RFC-3339
+    /// (`Z`/offset), zone-less, or date-only, normalised to naive-UTC.
+    #[serde(default, deserialize_with = "super::datetime::deserialize_opt")]
     pub valid_from: Option<DateTime>,
     #[serde(default)]
     pub reason: Option<String>,
