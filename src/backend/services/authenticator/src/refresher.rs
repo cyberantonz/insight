@@ -37,6 +37,15 @@ use crate::session::SessionManager;
 const LEADER_KEY: &str = "asm:leader:idp_refresher";
 /// Per-session lock TTL — covers one grant round-trip with generous margin.
 const SESSION_LOCK_TTL_MS: u64 = 30_000;
+/// Wall-clock cap on the whole lock-holding critical section (grant + store
+/// retries). Kept safely below `SESSION_LOCK_TTL_MS` so the flow can never run
+/// past the lock it holds: if it did, the lock would expire mid-rotation and a
+/// second worker could pick up the same session and burn the one-time grant.
+const LOCK_HOLD_BUDGET_MS: u64 = SESSION_LOCK_TTL_MS - 5_000;
+/// Post-grant store retries (exponential backoff 200ms→3.2s, ~6s total) — the
+/// grant is already rotated, so we must persist the new token or the next
+/// attempt burns it; wide enough to ride a Redis blip, under the lock TTL.
+const STORE_RETRY_ATTEMPTS: u32 = 6;
 /// Backoff for transient failures: `min(base << failures, max)` seconds.
 const BACKOFF_BASE_SECONDS: u64 = 15;
 const BACKOFF_MAX_SECONDS: u64 = 300;
@@ -165,23 +174,39 @@ async fn run(state: Arc<AppState>, cancel: CancellationToken) {
 /// Refresh a single due session under its rotation lock.
 async fn refresh_one(state: &Arc<AppState>, metrics: &Metrics, session_id: &str) {
     let sessions = &state.sessions;
-    match sessions
+    let owner_token = match sessions
         .lock_session_refresh(session_id, SESSION_LOCK_TTL_MS)
         .await
     {
-        Ok(true) => {}
-        Ok(false) => return, // another worker is mid-rotation
+        Ok(Some(token)) => token,
+        Ok(None) => return, // another worker is mid-rotation
         Err(e) => {
             tracing::warn!(error = %e, session_id, "refresh lock failed");
             return;
         }
-    }
+    };
 
-    let result = do_refresh(state, metrics, session_id).await;
-    if let Err(e) = result {
-        tracing::warn!(error = %e, session_id, "idp refresh: store error");
+    // Bound the critical section below the lock TTL so we can never operate on
+    // an expired lock (which a second worker could have re-acquired).
+    match tokio::time::timeout(
+        Duration::from_millis(LOCK_HOLD_BUDGET_MS),
+        do_refresh(state, metrics, session_id),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, session_id, "idp refresh: store error"),
+        Err(_) => tracing::error!(
+            session_id,
+            budget_ms = LOCK_HOLD_BUDGET_MS,
+            "idp refresh exceeded the lock budget; aborting so the lock is not outlived"
+        ),
     }
-    if let Err(e) = sessions.unlock_session_refresh(session_id).await {
+    // Owner-safe release: only drops the lock if we still hold this token.
+    if let Err(e) = sessions
+        .unlock_session_refresh(session_id, &owner_token)
+        .await
+    {
         tracing::debug!(error = %e, session_id, "refresh unlock failed (lock TTL covers it)");
     }
 }
@@ -231,8 +256,12 @@ async fn do_refresh(
             // token → invalid_grant → false logout (review M3). So retry the
             // store a few times before giving up; the guard returns false only
             // when the session was concurrently revoked (then just unschedule).
+            // Retry generously: exponential backoff 200ms→3.2s over STORE_RETRY
+            // attempts (~6s total), to ride out a realistic Redis failover/blip
+            // rather than only a sub-second hiccup. Still far under the 30s
+            // per-session lock TTL, so the lock/permit is never held past it.
             let mut stored = false;
-            for attempt in 0..3u32 {
+            for attempt in 0..STORE_RETRY_ATTEMPTS {
                 match sessions
                     .store_idp_refresh(
                         session_id,
@@ -252,12 +281,13 @@ async fn do_refresh(
                         stored = true;
                         break;
                     }
-                    Err(e) if attempt == 2 => {
+                    Err(e) if attempt == STORE_RETRY_ATTEMPTS - 1 => {
                         tracing::error!(error = %e, session_id, "idp refresh: store failed after retries — the rotated token is lost, session will be logged out on the next attempt");
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, session_id, attempt, "idp refresh store failed, retrying");
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        let backoff_ms = 200u64 << attempt;
+                        tracing::warn!(error = %e, session_id, attempt, backoff_ms, "idp refresh store failed, retrying");
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                     }
                 }
             }
