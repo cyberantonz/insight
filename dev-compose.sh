@@ -2184,8 +2184,10 @@ cmd_test_stand() {
         source)
           if [[ "$skip_build" == "true" ]]; then
             test_stand_prime_dev_images || return 1
+            echo "=== the backend mounts binaries already in deploy/compose/build (--skip-build) ==="
+          else
+            echo "=== the backend is compiled from this tree, not pulled ==="
           fi
-          echo "=== the backend is compiled from this tree, not pulled ==="
           ;;
         prebuilt)
           test_stand_use_prebuilt_backends || return 1
@@ -2257,8 +2259,10 @@ cmd_test_stand() {
         source)
           if [[ "$mskip_build" == "true" ]]; then
             test_stand_prime_dev_images || return 1
+            echo "=== the backend mounts binaries already in deploy/compose/build (--skip-build) ==="
+          else
+            echo "=== the backend is compiled from this tree, not pulled ==="
           fi
-          echo "=== the backend is compiled from this tree, not pulled ==="
           ;;
         prebuilt) test_stand_use_prebuilt_backends || return 1 ;;
         pinned)   test_stand_backend_matches_charts || return 1
